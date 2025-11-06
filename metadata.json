@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Prototype for AI Remodeler",
+  "description": "A mobile-first web app that uses AI to help you visualize and plan your room renovations. Upload a floorplan or scan your room, choose your style, and get stunning, photorealistic renderings in seconds.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
