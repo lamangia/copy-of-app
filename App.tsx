@@ -1,8 +1,8 @@
 // Fix: Removed unused GoogleGenAI import.
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture, changeWallColor } from './services/geminiService';
-import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS } from './constants';
-import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store } from './types';
+import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS, MockupIcon } from './constants';
+import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store, MockupFurnitureItem } from './types';
 import StepIndicator from './components/StepIndicator';
 import Loader from './components/Loader';
 
@@ -48,6 +48,9 @@ const App: React.FC = () => {
     const [generatedImages, setGeneratedImages] = useState<string[]>([]);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     
+    // State for different app views
+    const [currentView, setCurrentView] = useState<'wizard' | 'mockup'>('wizard');
+
     // State for new subscription flow
     const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState<boolean>(false);
     const [unlockedDesigns, setUnlockedDesigns] = useState<boolean>(false);
@@ -80,6 +83,14 @@ const App: React.FC = () => {
     const [previewWallColor, setPreviewWallColor] = useState<string>('');
     const [isRecoloring, setIsRecoloring] = useState<boolean>(false);
     const [recolorError, setRecolorError] = useState<string | null>(null);
+    
+    // State for Mockup Tool
+    const [mockupRoomImage, setMockupRoomImage] = useState<string | null>(null);
+    const [mockupFurniture, setMockupFurniture] = useState<MockupFurnitureItem[]>([]);
+    const [furnitureLibrary, setFurnitureLibrary] = useState<{ id: string; src: string }[]>([]);
+    const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+    const [actionState, setActionState] = useState<{ action: 'move' | 'resize' | 'rotate' | null; initialX: number; initialY: number; initialItemState?: MockupFurnitureItem }>({ action: null, initialX: 0, initialY: 0 });
+    const mockupCanvasRef = useRef<HTMLDivElement>(null);
 
 
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -137,6 +148,15 @@ const App: React.FC = () => {
             const mimeType = result.substring(result.indexOf(':') + 1, result.indexOf(';'));
             resolve({ data: base64Data, mimeType });
           };
+          reader.onerror = (error) => reject(error);
+        });
+    };
+    
+    const fileToDataUrl = (file: File): Promise<string> => {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.readAsDataURL(file);
+          reader.onload = () => resolve(reader.result as string);
           reader.onerror = (error) => reject(error);
         });
     };
@@ -465,6 +485,134 @@ const App: React.FC = () => {
             setIsRecoloring(false);
         }
     };
+    
+    // --- MOCKUP TOOL ---
+    const handleMockupRoomUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            const dataUrl = await fileToDataUrl(file);
+            setMockupRoomImage(dataUrl);
+        }
+    };
+
+    const handleFurnitureLibraryUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        if (files) {
+            const newItems = await Promise.all(
+                Array.from(files).map(async file => {
+                    const src = await fileToDataUrl(file);
+                    return { id: `lib_${Date.now()}_${Math.random()}`, src };
+                })
+            );
+            setFurnitureLibrary(prev => [...prev, ...newItems]);
+        }
+    };
+
+    const addFurnitureToCanvas = (libItem: { id: string; src: string }) => {
+        const img = new Image();
+        img.src = libItem.src;
+        img.onload = () => {
+            const canvasRect = mockupCanvasRef.current?.getBoundingClientRect();
+            if (!canvasRect) return;
+
+            // Add item to the center of the canvas
+            const newItem: MockupFurnitureItem = {
+                id: `item_${Date.now()}`,
+                src: libItem.src,
+                x: canvasRect.width / 2 - img.width / 4,
+                y: canvasRect.height / 2 - img.height / 4,
+                width: img.width / 2,
+                height: img.height / 2,
+                scale: 1,
+                rotation: 0,
+                zIndex: mockupFurniture.length + 1,
+            };
+            setMockupFurniture(prev => [...prev, newItem]);
+            setSelectedItemId(newItem.id);
+        };
+    };
+
+    const getEventCoords = (e: React.MouseEvent | React.TouchEvent) => {
+        if ('touches' in e && e.touches.length > 0) {
+            return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        }
+        return { x: (e as React.MouseEvent).clientX, y: (e as React.MouseEvent).clientY };
+    };
+
+    const handleItemInteractionStart = (e: React.MouseEvent | React.TouchEvent, itemId: string, action: 'move' | 'resize' | 'rotate') => {
+        e.stopPropagation();
+        const currentItem = mockupFurniture.find(item => item.id === itemId);
+        if (!currentItem) return;
+
+        setSelectedItemId(itemId);
+        const { x, y } = getEventCoords(e);
+        setActionState({ action, initialX: x, initialY: y, initialItemState: { ...currentItem } });
+
+        // Bring to front on move
+        if(action === 'move') {
+            const maxZ = Math.max(...mockupFurniture.map(f => f.zIndex), 0);
+            setMockupFurniture(mf => mf.map(f => f.id === itemId ? {...f, zIndex: maxZ + 1} : f));
+        }
+    };
+
+    const handleInteractionMove = useCallback((e: MouseEvent | TouchEvent) => {
+        if (!actionState.action || !actionState.initialItemState) return;
+        e.preventDefault();
+
+        const { x: currentX, y: currentY } = getEventCoords(e as any);
+        const deltaX = currentX - actionState.initialX;
+        const deltaY = currentY - actionState.initialY;
+
+        setMockupFurniture(prev => prev.map(item => {
+            if (item.id !== actionState.initialItemState!.id) return item;
+
+            let updatedItem = { ...item };
+            
+            if (actionState.action === 'move') {
+                updatedItem.x = actionState.initialItemState!.x + deltaX;
+                updatedItem.y = actionState.initialItemState!.y + deltaY;
+            } else if (actionState.action === 'resize') {
+                 const originalDist = Math.sqrt(Math.pow(actionState.initialItemState!.width, 2) + Math.pow(actionState.initialItemState!.height, 2));
+                 const newDist = Math.sqrt(Math.pow(actionState.initialItemState!.width + deltaX, 2) + Math.pow(actionState.initialItemState!.height + deltaY, 2));
+                 updatedItem.scale = actionState.initialItemState!.scale * (newDist/originalDist);
+            } else if (actionState.action === 'rotate') {
+                const itemCenterX = item.x + (item.width * item.scale) / 2;
+                const itemCenterY = item.y + (item.height * item.scale) / 2;
+                const angle1 = Math.atan2(actionState.initialY - itemCenterY, actionState.initialX - itemCenterX);
+                const angle2 = Math.atan2(currentY - itemCenterY, currentX - itemCenterX);
+                updatedItem.rotation = actionState.initialItemState!.rotation + (angle2 - angle1) * (180 / Math.PI);
+            }
+            
+            return updatedItem;
+        }));
+
+    }, [actionState]);
+
+    const handleInteractionEnd = useCallback(() => {
+        setActionState({ action: null, initialX: 0, initialY: 0 });
+    }, []);
+
+    useEffect(() => {
+        window.addEventListener('mousemove', handleInteractionMove);
+        window.addEventListener('touchmove', handleInteractionMove, { passive: false });
+        window.addEventListener('mouseup', handleInteractionEnd);
+        window.addEventListener('touchend', handleInteractionEnd);
+
+        return () => {
+            window.removeEventListener('mousemove', handleInteractionMove);
+            window.removeEventListener('touchmove', handleInteractionMove);
+            window.removeEventListener('mouseup', handleInteractionEnd);
+            window.removeEventListener('touchend', handleInteractionEnd);
+        };
+    }, [handleInteractionMove, handleInteractionEnd]);
+
+    const handleDeleteItem = () => {
+        if (selectedItemId) {
+            setMockupFurniture(prev => prev.filter(item => item.id !== selectedItemId));
+            setSelectedItemId(null);
+        }
+    };
+    // --- END MOCKUP TOOL ---
 
     const renderHeader = (title: string, subtitle: string) => (
         <div className="text-center p-4 mb-4">
@@ -497,7 +645,7 @@ const App: React.FC = () => {
 
     const renderStep2 = () => (
         <div className="p-4">
-            {renderHeader("Let's Get Started", "Which room are you renovating?")}
+            {renderHeader("Let's Get Started", "How do you want to begin?")}
             <div className="grid grid-cols-2 gap-4 mt-4">
                 {ROOM_TYPES.map((room) => (
                     <button key={room.id} onClick={() => { setRoomType(room); handleNextStep(); }} className="flex flex-col items-center justify-center p-4 bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md hover:border-slate-400 transition-all duration-200 aspect-square">
@@ -505,6 +653,11 @@ const App: React.FC = () => {
                         <span className="mt-2 font-semibold text-slate-800">{room.name}</span>
                     </button>
                 ))}
+                <button onClick={() => setCurrentView('mockup')} className="col-span-2 flex flex-col items-center justify-center p-4 bg-slate-800 text-white rounded-xl border border-slate-700 shadow-sm hover:shadow-md hover:bg-slate-700 transition-all duration-200">
+                    <MockupIcon />
+                    <span className="mt-2 font-semibold">Create a Mock Up</span>
+                    <p className="text-xs text-slate-300 mt-1">Manually place furniture in your room</p>
+                </button>
             </div>
         </div>
     );
@@ -1209,6 +1362,91 @@ const App: React.FC = () => {
             </div>
         </div>
     );
+    
+    const renderMockupTool = () => {
+        const selectedItem = mockupFurniture.find(item => item.id === selectedItemId);
+        return (
+             <div className="flex flex-col h-full bg-stone-100">
+                <header className="flex items-center justify-between p-2 border-b border-stone-200 bg-white flex-shrink-0">
+                    <button onClick={() => setCurrentView('wizard')} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>
+                    <h2 className="font-semibold text-slate-700">Mock Up Visualizer</h2>
+                    <div className="w-10"></div>
+                </header>
+                <main className="flex-grow flex flex-col md:flex-row overflow-hidden">
+                    <div ref={mockupCanvasRef} className="relative flex-grow bg-stone-200 overflow-hidden" onClick={() => setSelectedItemId(null)}>
+                        {!mockupRoomImage ? (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center p-4">
+                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                <h3 className="font-serif text-xl font-semibold mt-4 text-slate-700">Start Your Mock Up</h3>
+                                <p className="text-slate-500 mb-4 text-center">Upload a photo of your room to begin.</p>
+                                <label htmlFor="mockup-room-upload" className="bg-slate-800 text-white py-2 px-5 rounded-lg font-semibold hover:bg-slate-700 transition cursor-pointer">
+                                    Upload Room Photo
+                                </label>
+                                <input id="mockup-room-upload" type="file" className="hidden" accept="image/*" onChange={handleMockupRoomUpload} />
+                            </div>
+                        ) : (
+                            <img src={mockupRoomImage} className="w-full h-full object-contain" alt="User's room" />
+                        )}
+                        {mockupFurniture.map(item => (
+                            <div
+                                key={item.id}
+                                className="absolute cursor-move"
+                                style={{
+                                    left: item.x,
+                                    top: item.y,
+                                    width: item.width * item.scale,
+                                    height: item.height * item.scale,
+                                    transform: `rotate(${item.rotation}deg)`,
+                                    zIndex: item.zIndex,
+                                }}
+                                onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'move')}
+                                onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'move')}
+                            >
+                                <img src={item.src} className="w-full h-full pointer-events-none" alt="furniture item" />
+                                {selectedItemId === item.id && (
+                                    <>
+                                        <div className="absolute -inset-1 border-2 border-slate-600 border-dashed pointer-events-none"></div>
+                                        <div 
+                                            className="absolute -top-3 -right-3 w-6 h-6 bg-white border-2 border-slate-600 rounded-full cursor-nwse-resize"
+                                            onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'resize')}
+                                            onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'resize')}
+                                        ></div>
+                                        <div 
+                                            className="absolute -bottom-3 -left-3 w-6 h-6 bg-white border-2 border-slate-600 rounded-full cursor-grab"
+                                            onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'rotate')}
+                                            onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'rotate')}
+                                        ></div>
+                                    </>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                     <div className="flex-shrink-0 bg-white border-t md:border-t-0 md:border-l border-stone-200 w-full md:w-64 p-2 flex flex-col">
+                         <h3 className="font-semibold text-slate-800 p-2 text-center">Furniture Library</h3>
+                         {selectedItem && (
+                            <div className="p-2 border-b border-stone-200 mb-2">
+                                <button onClick={handleDeleteItem} className="w-full py-2 px-3 text-sm font-semibold rounded-md bg-red-100 text-red-700 hover:bg-red-200 transition border border-red-200">
+                                    Delete Selected
+                                </button>
+                            </div>
+                         )}
+                         <div className="grid grid-cols-4 md:grid-cols-2 gap-2 overflow-y-auto flex-grow">
+                             {furnitureLibrary.map(item => (
+                                <div key={item.id} onClick={() => addFurnitureToCanvas(item)} className="p-1 bg-stone-100 rounded-md cursor-pointer hover:bg-stone-200 aspect-square">
+                                    <img src={item.src} className="w-full h-full object-contain" alt="furniture library item" />
+                                </div>
+                             ))}
+                             <label htmlFor="furniture-upload" className="flex flex-col items-center justify-center p-1 bg-stone-50 border-2 border-dashed border-stone-300 rounded-md cursor-pointer hover:bg-stone-100 aspect-square">
+                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>
+                                 <span className="text-xs text-stone-500 mt-1 text-center">Add Item</span>
+                             </label>
+                             <input id="furniture-upload" type="file" className="hidden" accept="image/png, image/jpeg, image/webp" onChange={handleFurnitureLibraryUpload} multiple />
+                         </div>
+                     </div>
+                </main>
+            </div>
+        );
+    };
 
     const renderCurrentStep = () => {
         switch (step) {
@@ -1230,49 +1468,56 @@ const App: React.FC = () => {
             {isSubscriptionModalOpen && renderSubscriptionModal()}
             {isDashboardOpen && renderProjectDashboardModal()}
             {isRecolorModalOpen && renderRecolorModal()}
-            <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen || isRecolorModalOpen ? 'hidden' : ''}`}>
-                <header className="flex items-center justify-between p-2 border-b border-stone-200">
-                    <div className="w-10 flex-shrink-0">
-                        {step > 1 && <button onClick={handlePrevStep} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>}
-                    </div>
-                    <div className="flex-grow text-center">
-                        {step > 1 && projectName ? (
-                            <div className="flex items-center justify-center">
-                                <span className="font-semibold text-sm text-slate-700 truncate max-w-[120px]">{projectName}</span>
-                                <button onClick={() => setIsDashboardOpen(true)} className="ml-2 p-1.5 rounded-full hover:bg-stone-200" aria-label="Open Project Dashboard">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                                    </svg>
-                                </button>
-                            </div>
-                        ) : (
-                             <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
-                        )}
-                    </div>
-                    <div className="w-10 flex-shrink-0 flex items-center justify-center">
-                        {cartItems.length > 0 && (
-                            <div className="relative">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-600" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-                                <span className="absolute -top-2 -right-2 bg-red-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center border-2 border-white">
-                                    {cartItems.length}
-                                </span>
-                            </div>
-                        )}
-                    </div>
-                </header>
-                <main className="flex-grow flex flex-col overflow-y-auto bg-stone-50">
-                    <div className="flex-grow flex flex-col">
-                        {step > 1 && (
-                            <div className="flex-shrink-0">
-                                <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
-                            </div>
-                        )}
-                        <div className="flex-grow flex flex-col">
-                           {renderCurrentStep()}
+
+            {currentView === 'wizard' ? (
+                <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen || isRecolorModalOpen ? 'hidden' : ''}`}>
+                    <header className="flex items-center justify-between p-2 border-b border-stone-200">
+                        <div className="w-10 flex-shrink-0">
+                            {step > 1 && <button onClick={handlePrevStep} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>}
                         </div>
-                    </div>
-                </main>
-            </div>
+                        <div className="flex-grow text-center">
+                            {step > 1 && projectName ? (
+                                <div className="flex items-center justify-center">
+                                    <span className="font-semibold text-sm text-slate-700 truncate max-w-[120px]">{projectName}</span>
+                                    <button onClick={() => setIsDashboardOpen(true)} className="ml-2 p-1.5 rounded-full hover:bg-stone-200" aria-label="Open Project Dashboard">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            ) : (
+                                <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
+                            )}
+                        </div>
+                        <div className="w-10 flex-shrink-0 flex items-center justify-center">
+                            {cartItems.length > 0 && (
+                                <div className="relative">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-600" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                                    <span className="absolute -top-2 -right-2 bg-red-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center border-2 border-white">
+                                        {cartItems.length}
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+                    </header>
+                    <main className="flex-grow flex flex-col overflow-y-auto bg-stone-50">
+                        <div className="flex-grow flex flex-col">
+                            {step > 1 && (
+                                <div className="flex-shrink-0">
+                                    <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
+                                </div>
+                            )}
+                            <div className="flex-grow flex flex-col">
+                            {renderCurrentStep()}
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            ) : (
+                <div className="w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow">
+                    {renderMockupTool()}
+                </div>
+            )}
         </div>
     );
 };
