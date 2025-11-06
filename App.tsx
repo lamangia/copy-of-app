@@ -6,10 +6,11 @@ import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store } from './t
 import StepIndicator from './components/StepIndicator';
 import Loader from './components/Loader';
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 7;
 
 const App: React.FC = () => {
     const [step, setStep] = useState<number>(1);
+    const [projectName, setProjectName] = useState<string>('');
     const [roomType, setRoomType] = useState<Room | null>(null);
     const [inputMethod, setInputMethod] = useState<'upload' | 'scan' | 'manual' | null>(null);
     const [imageInputType, setImageInputType] = useState<'floorplan' | 'photo' | null>(null);
@@ -29,6 +30,9 @@ const App: React.FC = () => {
     // State for new subscription flow
     const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState<boolean>(false);
     const [unlockedDesigns, setUnlockedDesigns] = useState<boolean>(false);
+    
+    // State for Project Dashboard
+    const [isDashboardOpen, setIsDashboardOpen] = useState<boolean>(false);
 
 
     // State for Step 5: Shopping
@@ -77,7 +81,7 @@ const App: React.FC = () => {
     };
 
     useEffect(() => {
-        if ((step === 2 && inputMethod === 'scan') || arImageSrc) {
+        if ((step === 3 && inputMethod === 'scan') || arImageSrc) {
             startCamera();
         } else {
             stopCamera();
@@ -190,7 +194,7 @@ const App: React.FC = () => {
 
         } catch (error) {
             setErrorMessage("An error occurred while generating images. Please try again.");
-            setStep(4); // Go back to config step
+            setStep(5); // Go back to config step
         } finally {
             setIsGenerating(false);
         }
@@ -267,7 +271,7 @@ const App: React.FC = () => {
         setIsIdentifyingFurniture(true);
         setIdentifiedFurniture([]); // Clear previous results
         setErrorMessage(null);
-        setStep(6); // Move to the new step immediately to show a loader there
+        setStep(7); // Move to the new step immediately to show a loader there
     
         try {
             const styleNames = designStyles.map(s => s.name);
@@ -278,7 +282,7 @@ const App: React.FC = () => {
         } catch (error)
  {
             setErrorMessage("Could not identify furniture in this image. Please try another one.");
-            setStep(5); // Go back to the results
+            setStep(6); // Go back to the results
         } finally {
             setIsIdentifyingFurniture(false);
         }
@@ -376,6 +380,28 @@ const App: React.FC = () => {
     );
     
     const renderStep1 = () => (
+        <div className="p-4 flex flex-col items-center justify-center flex-grow">
+            {renderHeader("Name Your Project", "Give your project a name so you can easily find it later.")}
+            <div className="w-full max-w-sm">
+                <input
+                    type="text"
+                    value={projectName}
+                    onChange={e => setProjectName(e.target.value)}
+                    placeholder="e.g., Living Room Makeover"
+                    className="w-full p-3 border border-stone-300 rounded-lg text-center text-lg focus:ring-2 focus:ring-slate-500 focus:border-slate-500"
+                />
+                <button 
+                    onClick={handleNextStep}
+                    disabled={!projectName.trim()}
+                    className="mt-6 w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed"
+                >
+                    Start Project
+                </button>
+            </div>
+        </div>
+    );
+
+    const renderStep2 = () => (
         <div className="p-4">
             {renderHeader("Let's Get Started", "Which room are you renovating?")}
             <div className="grid grid-cols-2 gap-4 mt-4">
@@ -410,7 +436,7 @@ const App: React.FC = () => {
         });
     };
 
-    const renderStep2 = () => {
+    const renderStep3 = () => {
         const handleWallCountChange = (count: number) => {
             const newCount = Math.max(3, Math.min(10, count || 3));
             const currentWalls = floorplanImage?.detailedLayout?.walls || [];
@@ -563,7 +589,7 @@ const App: React.FC = () => {
         );
     }
 
-    const renderStep3 = () => (
+    const renderStep4 = () => (
         <div className="p-4">
             {renderHeader("Design Details", "Tell us about your space and style.")}
             <div className="space-y-6">
@@ -704,7 +730,7 @@ const App: React.FC = () => {
                             </div>
                         ))}
                     </div>
-                    <button onClick={() => { setStep(1); setGeneratedImages([]); setSavedItems([]); setUnlockedDesigns(false); setImageInputType(null); setSelectedStores([]); }} className="mt-4 w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition">Start a New Project</button>
+                    <button onClick={() => { setStep(1); setProjectName(''); setGeneratedImages([]); setSavedItems([]); setUnlockedDesigns(false); setImageInputType(null); setSelectedStores([]); }} className="mt-4 w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition">Start a New Project</button>
                 </>
             )}
         </div>
@@ -891,7 +917,7 @@ const App: React.FC = () => {
                                         <img src={item.thumbnailUrl} alt={item.name} className="w-20 h-20 object-cover rounded-md border flex-shrink-0 bg-white" />
                                     ) : (
                                         <div className="w-20 h-20 bg-stone-100 rounded-md border flex-shrink-0 flex items-center justify-center">
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-stone-400" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                                             </svg>
                                         </div>
@@ -937,15 +963,63 @@ const App: React.FC = () => {
             </div>
         </div>
     );
+    
+    const renderProjectDashboardModal = () => {
+        let floorplanDetails = "Not defined yet";
+        if (floorplanImage) {
+            if (floorplanImage.data) {
+                floorplanDetails = imageInputType === 'photo' ? "Based on uploaded photo" : "Based on uploaded floorplan";
+            } else if (floorplanImage.detailedLayout) {
+                floorplanDetails = `${floorplanImage.detailedLayout.walls.length} walls (Custom)`;
+            } else if (floorplanImage.dimensions) {
+                floorplanDetails = `${floorplanImage.dimensions.length}x${floorplanImage.dimensions.width} ${floorplanImage.dimensions.units} (Rectangle)`;
+            }
+        }
+    
+        const dashboardItems = [
+            { name: "Floorplan", value: floorplanDetails },
+            { name: "Palette", value: colorPalette || "Not defined yet" },
+            { name: "Mood Board", value: "Coming Soon" },
+            { name: "Furniture", value: `${identifiedFurniture.length} items found` },
+            { name: "Saved Items", value: `${savedItems.length} items saved` },
+            { name: "Image Library", value: `${generatedImages.length} images generated` },
+        ];
+    
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
+                    <header className="p-4 border-b border-stone-200 flex justify-between items-center flex-shrink-0">
+                        <div>
+                            <h2 className="text-lg font-serif font-bold text-slate-800">Project: {projectName}</h2>
+                        </div>
+                        <button onClick={() => setIsDashboardOpen(false)} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </header>
+                    <div className="flex-grow overflow-y-auto p-4 space-y-3">
+                        {dashboardItems.map(item => (
+                            <div key={item.name} className="bg-stone-50 p-3 rounded-lg border border-stone-200 flex justify-between items-center">
+                                <span className="font-semibold text-slate-700">{item.name}</span>
+                                <span className={`text-sm ${item.value === "Not defined yet" || item.value === "Coming Soon" ? "text-slate-400" : "text-slate-600 font-medium"}`}>{item.value}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        );
+    };
 
     const renderCurrentStep = () => {
         switch (step) {
             case 1: return renderStep1();
             case 2: return renderStep2();
             case 3: return renderStep3();
-            case 4: return renderStoreSelectionStep();
-            case 5: return renderResultsStep();
-            case 6: return renderShopStep();
+            case 4: return renderStep4();
+            case 5: return renderStoreSelectionStep();
+            case 6: return renderResultsStep();
+            case 7: return renderShopStep();
             default: return renderStep1();
         }
     };
@@ -955,13 +1029,25 @@ const App: React.FC = () => {
             {arImageSrc && renderARView()}
             {selectedItemForSimilar && renderSimilarItemsModal()}
             {isSubscriptionModalOpen && renderSubscriptionModal()}
-            <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen ? 'hidden' : ''}`}>
+            {isDashboardOpen && renderProjectDashboardModal()}
+            <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen ? 'hidden' : ''}`}>
                 <header className="flex items-center justify-between p-2 border-b border-stone-200">
                     <div className="w-10 flex-shrink-0">
                         {step > 1 && <button onClick={handlePrevStep} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>}
                     </div>
-                    <div className="flex-grow">
-                        <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
+                    <div className="flex-grow text-center">
+                        {step > 1 && projectName ? (
+                            <div className="flex items-center justify-center">
+                                <span className="font-semibold text-sm text-slate-700 truncate max-w-[120px]">{projectName}</span>
+                                <button onClick={() => setIsDashboardOpen(true)} className="ml-2 p-1.5 rounded-full hover:bg-stone-200" aria-label="Open Project Dashboard">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                    </svg>
+                                </button>
+                            </div>
+                        ) : (
+                             <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
+                        )}
                     </div>
                     <div className="w-10 flex-shrink-0 flex items-center justify-center">
                         {cartItems.length > 0 && (
@@ -975,7 +1061,16 @@ const App: React.FC = () => {
                     </div>
                 </header>
                 <main className="flex-grow flex flex-col overflow-y-auto bg-stone-50">
-                    {renderCurrentStep()}
+                    <div className="flex-grow flex flex-col">
+                        {step > 1 && (
+                            <div className="flex-shrink-0">
+                                <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
+                            </div>
+                        )}
+                        <div className="flex-grow flex flex-col">
+                           {renderCurrentStep()}
+                        </div>
+                    </div>
                 </main>
             </div>
         </div>
