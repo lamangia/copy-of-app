@@ -78,7 +78,7 @@ For each item you successfully find a valid link for, provide:
 4.  **Price:** The approximate price as a string (e.g., "$499.99").
 5.  **Purchase URL:** The direct product page URL as described above.
 6.  **Bounding Box:** The item's location in the image, using normalized coordinates (0.0 to 1.0) for x_min, y_min, x_max, and y_max.
-7.  **Thumbnail URL:** A direct HTTPS URL to a product image. If you cannot find one, do not include the item.`;
+7.  **Thumbnail URL:** A direct, public HTTPS URL to a product image file (e.g., ending in .jpg, .png, .webp). This must be a URL to the image asset itself, not the HTML product page.`;
 
         const imagePart = {
             inlineData: {
@@ -107,7 +107,7 @@ For each item you successfully find a valid link for, provide:
                             },
                             thumbnailUrl: {
                                 type: Type.STRING,
-                                description: "A direct HTTPS URL to a product image for the item."
+                                description: "A direct, public HTTPS URL to a product image file (e.g., ending in .jpg, .png, .webp). This must be a URL to the image asset itself, not the HTML product page."
                             },
                             boundingBox: {
                                 type: Type.OBJECT,
@@ -154,7 +154,7 @@ For each alternative, you MUST provide:
 3.  **Store:** The name of the online store.
 4.  **Price:** The approximate price as a string (e.g., "$499.99").
 5.  **Purchase URL:** A direct, specific, and valid HTTPS link to the product's own detail page. **This URL must lead directly to the product, NOT to a homepage or category page.**
-6.  **Thumbnail URL:** A direct HTTPS URL to a product image.
+6.  **Thumbnail URL:** A direct, public HTTPS URL to a product image file (ending in .jpg, .png, or .webp). This must be a URL to the image itself, not a product page.
 
 The alternatives should be similar in style (e.g., Mid-Century Modern, Farmhouse) and function, but can vary in price or material. Do not suggest the exact same product from a different store.`;
 
@@ -178,7 +178,7 @@ The alternatives should be similar in style (e.g., Mid-Century Modern, Farmhouse
                             },
                             thumbnailUrl: { 
                                 type: Type.STRING, 
-                                description: "A direct HTTPS URL to a product image." 
+                                description: "A direct, public HTTPS URL to a product image file (ending in .jpg, .png, or .webp). This must be a URL to the image itself, not a product page." 
                             },
                         },
                         required: ['name', 'description', 'store', 'price', 'purchaseUrl', 'thumbnailUrl'],

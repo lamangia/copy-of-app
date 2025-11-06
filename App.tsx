@@ -1114,7 +1114,7 @@ const App: React.FC = () => {
                 <header className="p-4 border-b border-stone-200 flex justify-between items-center flex-shrink-0">
                     <h2 className="text-lg font-serif font-bold text-slate-800">Change Wall Color</h2>
                     <button onClick={handleCloseRecolorModal} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                 </header>
                 <div className="flex-grow overflow-y-auto p-4 space-y-4">
@@ -1123,7 +1123,7 @@ const App: React.FC = () => {
                             <img src={`data:image/png;base64,${imageToRecolor.src}`} alt="Room design to recolor" className="rounded-lg shadow-sm w-full h-auto" />
                         )}
                         <div
-                            className="absolute inset-0 rounded-lg mix-blend-color pointer-events-none transition-colors duration-100"
+                            className="absolute inset-0 rounded-lg mix-blend-soft-light pointer-events-none transition-colors duration-100"
                             style={{ backgroundColor: previewWallColor || 'transparent' }}
                         ></div>
                     </div>
@@ -1182,6 +1182,9 @@ const App: React.FC = () => {
                             ))}
                         </div>
                     </div>
+                    <p className="text-xs text-slate-500 text-center mt-2 p-2 bg-stone-100 rounded-md">
+                        Note: The live preview tints the whole image for a general feel. The final version will intelligently apply color <strong>only to the walls</strong>.
+                    </p>
                     {recolorError && (
                         <p className="text-red-500 text-sm text-center bg-red-50 p-2 rounded-md">{recolorError}</p>
                     )}
