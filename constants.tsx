@@ -21,6 +21,9 @@ export const DESIGN_STYLES: Style[] = [
   { id: 'boho', name: 'Boho' },
   { id: 'coastal', name: 'Coastal' },
   { id: 'classic', name: 'Classic' },
+  { id: 'ultra-modern', name: 'Ultra Modern' },
+  { id: 'maximalist', name: 'Maximalist' },
+  { id: 'architectural', name: 'Architectural' },
 ];
 
 export const TIERS: Tier[] = [

@@ -18,7 +18,7 @@ const StepIndicator: React.FC<StepIndicatorProps> = ({ currentStep, totalSteps }
           <div key={stepNumber} className="flex items-center">
             <div
               className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold transition-all duration-300
-                ${isActive ? 'bg-slate-800 text-stone-100' : ''}
+                ${isActive ? 'bg-slate-800 text-white' : ''}
                 ${isCompleted ? 'bg-slate-500' : ''}
                 ${!isActive && !isCompleted ? 'border-2 border-stone-300 text-stone-400' : ''}
               `}

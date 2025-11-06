@@ -1,12 +1,33 @@
 // Fix: Removed unused GoogleGenAI import.
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture } from './services/geminiService';
+import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture, changeWallColor } from './services/geminiService';
 import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS } from './constants';
 import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store } from './types';
 import StepIndicator from './components/StepIndicator';
 import Loader from './components/Loader';
 
 const TOTAL_STEPS = 7;
+
+const PRESET_COLORS = [
+    { name: 'Sage Green', hex: '#B2AC88' },
+    { name: 'Warm Beige', hex: '#F5F5DC' },
+    { name: 'Light Gray', hex: '#D3D3D3' },
+    { name: 'Navy Blue', hex: '#000080' },
+    { name: 'Terracotta', hex: '#E2725B' },
+];
+
+// Helper to convert a data URL to a File object
+const dataURLtoFile = async (dataUrl: string, filename: string): Promise<File | null> => {
+    try {
+        const res = await fetch(dataUrl);
+        const blob = await res.blob();
+        return new File([blob], filename, { type: blob.type });
+    } catch (error) {
+        console.error("Error converting data URL to file:", error);
+        return null;
+    }
+};
+
 
 const App: React.FC = () => {
     const [step, setStep] = useState<number>(1);
@@ -51,6 +72,14 @@ const App: React.FC = () => {
     // State for AR View
     const [arImageSrc, setArImageSrc] = useState<string | null>(null);
     const [arOpacity, setArOpacity] = useState<number>(0.7);
+
+    // State for Wall Recolor
+    const [isRecolorModalOpen, setIsRecolorModalOpen] = useState<boolean>(false);
+    const [imageToRecolor, setImageToRecolor] = useState<{ src: string; index: number } | null>(null);
+    const [newWallColor, setNewWallColor] = useState<string>('');
+    const [previewWallColor, setPreviewWallColor] = useState<string>('');
+    const [isRecoloring, setIsRecoloring] = useState<boolean>(false);
+    const [recolorError, setRecolorError] = useState<string | null>(null);
 
 
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -360,15 +389,80 @@ const App: React.FC = () => {
     const handleSaveDesign = async (base64Image: string) => {
         try {
             const watermarkedDataUrl = await addWatermark(base64Image);
+            const fileName = `roomgenius-design-${Date.now()}.png`;
+
+            // Use Web Share API if available (modern mobile browsers)
+            if (navigator.share) {
+                const file = await dataURLtoFile(watermarkedDataUrl, fileName);
+                if (file) {
+                    try {
+                        await navigator.share({
+                            files: [file],
+                            title: projectName || 'RoomGenius Design',
+                            text: 'Check out this design from RoomGenius AI!',
+                        });
+                        return; // Exit if share is successful
+                    } catch (error) {
+                        // Catch user cancellation of share sheet, do not show error
+                        if ((error as Error).name === 'AbortError') {
+                            return;
+                        }
+                        throw error;
+                    }
+                }
+            }
+            
+            // Fallback for desktop and older browsers
             const link = document.createElement('a');
             link.href = watermarkedDataUrl;
-            link.download = `roomgenius-design-${Date.now()}.png`;
+            link.download = fileName;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
+            
         } catch (error) {
-            console.error("Error saving design:", error);
+            console.error("Error saving/sharing design:", error);
             setErrorMessage("Could not save the design. Please try again.");
+        }
+    };
+
+    const handleOpenRecolorModal = (src: string, index: number) => {
+        setImageToRecolor({ src, index });
+        setNewWallColor('');
+        setPreviewWallColor('');
+        setRecolorError(null);
+        setIsRecoloring(false);
+        setIsRecolorModalOpen(true);
+    };
+
+    const handleCloseRecolorModal = () => {
+        setIsRecolorModalOpen(false);
+        setImageToRecolor(null);
+        setPreviewWallColor('');
+    };
+
+    const handleRecolorSubmit = async () => {
+        if (!newWallColor || !imageToRecolor) return;
+
+        setIsRecoloring(true);
+        setRecolorError(null);
+
+        try {
+            const { src, index } = imageToRecolor;
+            const recoloredImage = await changeWallColor(src, newWallColor);
+
+            setGeneratedImages(prev => {
+                const newImages = [...prev];
+                newImages[index] = recoloredImage;
+                return newImages;
+            });
+
+            handleCloseRecolorModal();
+
+        } catch (error) {
+            setRecolorError("Sorry, we couldn't recolor the walls. Please try a different color or try again.");
+        } finally {
+            setIsRecoloring(false);
         }
     };
 
@@ -388,7 +482,7 @@ const App: React.FC = () => {
                     value={projectName}
                     onChange={e => setProjectName(e.target.value)}
                     placeholder="e.g., Living Room Makeover"
-                    className="w-full p-3 border border-stone-300 rounded-lg text-center text-lg focus:ring-2 focus:ring-slate-500 focus:border-slate-500"
+                    className="w-full p-3 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg text-center text-lg focus:ring-2 focus:ring-slate-500 focus:border-slate-500"
                 />
                 <button 
                     onClick={handleNextStep}
@@ -495,16 +589,16 @@ const App: React.FC = () => {
                                         <input type="number" value={floorplanImage?.dimensions?.length || ''} onChange={e => {
                                             const length = parseInt(e.target.value, 10) || 0;
                                             setFloorplanImage(fp => ({ ...(fp!), dimensions: { ...(fp!.dimensions!), length } }));
-                                        }} className="w-full p-2 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" placeholder="Length" />
+                                        }} className="w-full p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" placeholder="Length" />
                                         <span className="text-slate-500">x</span>
                                         <input type="number" value={floorplanImage?.dimensions?.width || ''} onChange={e => {
                                             const width = parseInt(e.target.value, 10) || 0;
                                             setFloorplanImage(fp => ({ ...(fp!), dimensions: { ...(fp!.dimensions!), width } }));
-                                        }} className="w-full p-2 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" placeholder="Width" />
+                                        }} className="w-full p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" placeholder="Width" />
                                         <select value={floorplanImage?.dimensions?.units || 'ft'} onChange={e => {
                                             const units = e.target.value as 'ft' | 'm';
                                             setFloorplanImage(fp => ({ ...(fp!), dimensions: { ...(fp!.dimensions!), units } }));
-                                        }} className="p-2 border border-stone-300 rounded-lg bg-white focus:ring-1 focus:ring-slate-500 focus:border-slate-500">
+                                        }} className="p-2 bg-slate-800 text-white border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500">
                                             <option value="ft">ft</option>
                                             <option value="m">m</option>
                                         </select>
@@ -519,19 +613,19 @@ const App: React.FC = () => {
                                         <select value={floorplanImage?.detailedLayout?.units || 'ft'} onChange={e => {
                                             const units = e.target.value as 'ft' | 'm';
                                             setFloorplanImage(fp => ({ ...fp, detailedLayout: { ...(fp!.detailedLayout!), units } }));
-                                        }} className="p-1 border border-stone-300 rounded-lg bg-white text-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500">
+                                        }} className="p-1 bg-slate-800 text-white border border-slate-600 rounded-lg text-sm focus:ring-1 focus:ring-slate-500 focus:border-slate-500">
                                             <option value="ft">ft</option>
                                             <option value="m">m</option>
                                         </select>
                                     </div>
-                                    <input id="wall-count" type="number" min="3" max="10" value={floorplanImage?.detailedLayout?.walls.length || 0} onChange={e => handleWallCountChange(parseInt(e.target.value, 10))} className="w-full p-2 mt-1 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
+                                    <input id="wall-count" type="number" min="3" max="10" value={floorplanImage?.detailedLayout?.walls.length || 0} onChange={e => handleWallCountChange(parseInt(e.target.value, 10))} className="w-full p-2 mt-1 bg-slate-800 text-white border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
                                 </div>
                                 <div className="space-y-3 max-h-40 overflow-y-auto pr-2 -mr-2">
                                     {floorplanImage?.detailedLayout?.walls.map((wall, index) => (
                                         <div key={index} className="grid grid-cols-5 gap-2 items-center">
                                             <label className="col-span-1 text-sm font-medium text-slate-600">W{index+1}</label>
-                                            <input type="number" placeholder="Length" value={wall.length} onChange={e => handleWallDetailChange(index, 'length', parseInt(e.target.value, 10) || 0)} className="col-span-2 w-full p-2 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
-                                            <input type="number" placeholder="Angle" value={wall.angle} onChange={e => handleWallDetailChange(index, 'angle', parseInt(e.target.value, 10) || 0)} className="col-span-2 w-full p-2 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
+                                            <input type="number" placeholder="Length" value={wall.length} onChange={e => handleWallDetailChange(index, 'length', parseInt(e.target.value, 10) || 0)} className="col-span-2 w-full p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
+                                            <input type="number" placeholder="Angle" value={wall.angle} onChange={e => handleWallDetailChange(index, 'angle', parseInt(e.target.value, 10) || 0)} className="col-span-2 w-full p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
                                         </div>
                                     ))}
                                 </div>
@@ -544,14 +638,14 @@ const App: React.FC = () => {
                                 <input id="doors" type="number" value={floorplanImage?.doors ?? 1} onChange={e => {
                                     const doors = parseInt(e.target.value, 10) || 0;
                                     setFloorplanImage(fp => ({ ...(fp!), doors }));
-                                }} min="0" max="10" className="w-full p-2 mt-1 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
+                                }} min="0" max="10" className="w-full p-2 mt-1 bg-slate-800 text-white border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
                             </div>
                             <div>
                                 <label htmlFor="manual-windows" className="font-semibold text-slate-700 block">Windows</label>
                                 <input id="manual-windows" type="number" value={floorplanImage?.windows ?? 2} onChange={e => {
                                     const windows = parseInt(e.target.value, 10) || 0;
                                     setFloorplanImage(fp => ({ ...(fp!), windows }));
-                                }} min="0" max="10" className="w-full p-2 mt-1 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
+                                }} min="0" max="10" className="w-full p-2 mt-1 bg-slate-800 text-white border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
                             </div>
                         </div>
 
@@ -606,7 +700,7 @@ const App: React.FC = () => {
                 <div>
                     <label className="font-semibold text-slate-700">Color Palette</label>
                     <div className="flex items-center space-x-2 mt-2">
-                        <input type="text" value={colorPalette} onChange={e => setColorPalette(e.target.value)} placeholder="e.g. Beige, Sage Green, Gold" className="w-full p-2 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
+                        <input type="text" value={colorPalette} onChange={e => setColorPalette(e.target.value)} placeholder="e.g. Beige, Sage Green, Gold" className="w-full p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
                         <button onClick={handleRecommendColor} disabled={designStyles.length === 0 || isRecommendingColor} className="p-2 bg-stone-100 text-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed border border-stone-200">
                             {isRecommendingColor ? <div className="w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full animate-spin"></div> : 'AI ✨'}
                         </button>
@@ -619,13 +713,13 @@ const App: React.FC = () => {
                 <div className="grid grid-cols-2 gap-4">
                     <div>
                         <label htmlFor="direction" className="font-semibold text-slate-700 block">Facing Direction</label>
-                        <select id="direction" value={roomFacing} onChange={e => setRoomFacing(e.target.value)} className="w-full p-2 mt-1 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500 bg-white">
+                        <select id="direction" value={roomFacing} onChange={e => setRoomFacing(e.target.value)} className="w-full p-2 mt-1 bg-slate-800 text-white border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500">
                             {ROOM_DIRECTIONS.map(dir => <option key={dir} value={dir}>{dir}</option>)}
                         </select>
                     </div>
                      <div>
                         <label htmlFor="windows" className="font-semibold text-slate-700 block">Windows</label>
-                        <input id="windows" type="number" value={windowCount} onChange={e => setWindowCount(parseInt(e.target.value))} min="0" max="10" className="w-full p-2 mt-1 border border-stone-300 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
+                        <input id="windows" type="number" value={windowCount} onChange={e => setWindowCount(parseInt(e.target.value))} min="0" max="10" className="w-full p-2 mt-1 bg-slate-800 text-white border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
                     </div>
                 </div>
 
@@ -715,7 +809,7 @@ const App: React.FC = () => {
                                     )}
                                 </div>
                                 {(index === 0 || unlockedDesigns) && (
-                                    <div className="p-3 grid grid-cols-3 gap-2">
+                                    <div className="p-3 grid grid-cols-2 gap-2">
                                          <button onClick={() => handleSaveDesign(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
                                             Save Design
                                         </button>
@@ -724,6 +818,9 @@ const App: React.FC = () => {
                                         </button>
                                         <button onClick={() => handleShopThisLook(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
                                             Shop this Look
+                                        </button>
+                                        <button onClick={() => handleOpenRecolorModal(imgSrc, index)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
+                                            Recolor Walls
                                         </button>
                                     </div>
                                 )}
@@ -1011,6 +1108,105 @@ const App: React.FC = () => {
         );
     };
 
+    const renderRecolorModal = () => (
+        <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
+                <header className="p-4 border-b border-stone-200 flex justify-between items-center flex-shrink-0">
+                    <h2 className="text-lg font-serif font-bold text-slate-800">Change Wall Color</h2>
+                    <button onClick={handleCloseRecolorModal} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                </header>
+                <div className="flex-grow overflow-y-auto p-4 space-y-4">
+                    <div className="relative">
+                        {imageToRecolor && (
+                            <img src={`data:image/png;base64,${imageToRecolor.src}`} alt="Room design to recolor" className="rounded-lg shadow-sm w-full h-auto" />
+                        )}
+                        <div
+                            className="absolute inset-0 rounded-lg mix-blend-color pointer-events-none transition-colors duration-100"
+                            style={{ backgroundColor: previewWallColor || 'transparent' }}
+                        ></div>
+                    </div>
+                    <div>
+                        <label htmlFor="wall-color-input" className="font-semibold text-slate-700 text-sm">New Wall Color</label>
+                        <div className="flex items-center space-x-2 mt-1">
+                            <input
+                                id="wall-color-input"
+                                type="text"
+                                value={newWallColor}
+                                onChange={e => {
+                                    const value = e.target.value;
+                                    setNewWallColor(value);
+                                    if (/^#([0-9A-F]{3}){1,2}$/i.test(value)) {
+                                        setPreviewWallColor(value);
+                                    } else {
+                                        setPreviewWallColor('');
+                                    }
+                                }}
+                                placeholder="e.g., #B2AC88 or Sage Green"
+                                className="flex-grow p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500"
+                            />
+                            <div className="relative w-10 h-10 flex-shrink-0">
+                                <input
+                                    type="color"
+                                    id="color-picker"
+                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                    value={previewWallColor && /^#[0-9A-F]{6}$/i.test(previewWallColor) ? previewWallColor : '#ffffff'}
+                                    onInput={e => {
+                                        const hex = e.currentTarget.value;
+                                        setNewWallColor(hex);
+                                        setPreviewWallColor(hex);
+                                    }}
+                                    aria-label="Select wall color with a color picker"
+                                />
+                                <label
+                                    htmlFor="color-picker"
+                                    className="block w-full h-full rounded-lg border border-slate-600 cursor-pointer"
+                                    style={{ backgroundColor: previewWallColor && /^#[0-9A-F]{6}$/i.test(previewWallColor) ? previewWallColor : '#cccccc' }}
+                                >
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <p className="font-semibold text-slate-700 text-sm mb-2">Or pick a preset:</p>
+                        <div className="flex flex-wrap gap-2">
+                            {PRESET_COLORS.map(color => (
+                                <button key={color.name} onClick={() => {
+                                        setNewWallColor(color.name);
+                                        setPreviewWallColor(color.hex);
+                                    }} className="flex items-center space-x-2 p-2 rounded-lg text-sm transition border hover:border-slate-500 bg-white text-slate-700 border-stone-300">
+                                    <span className="block w-4 h-4 rounded-full border border-stone-300" style={{ backgroundColor: color.hex }}></span>
+                                    <span>{color.name}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    {recolorError && (
+                        <p className="text-red-500 text-sm text-center bg-red-50 p-2 rounded-md">{recolorError}</p>
+                    )}
+                </div>
+                <footer className="p-4 border-t border-stone-200 flex-shrink-0">
+                    <button
+                        onClick={handleRecolorSubmit}
+                        disabled={!newWallColor.trim() || isRecoloring}
+                        className="w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center justify-center"
+                    >
+                        {isRecoloring ? (
+                            <>
+                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                Applying...
+                            </>
+                        ) : 'Apply Changes'}
+                    </button>
+                </footer>
+            </div>
+        </div>
+    );
+
     const renderCurrentStep = () => {
         switch (step) {
             case 1: return renderStep1();
@@ -1030,7 +1226,8 @@ const App: React.FC = () => {
             {selectedItemForSimilar && renderSimilarItemsModal()}
             {isSubscriptionModalOpen && renderSubscriptionModal()}
             {isDashboardOpen && renderProjectDashboardModal()}
-            <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen ? 'hidden' : ''}`}>
+            {isRecolorModalOpen && renderRecolorModal()}
+            <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen || isRecolorModalOpen ? 'hidden' : ''}`}>
                 <header className="flex items-center justify-between p-2 border-b border-stone-200">
                     <div className="w-10 flex-shrink-0">
                         {step > 1 && <button onClick={handlePrevStep} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>}

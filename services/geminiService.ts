@@ -1,5 +1,6 @@
 
 
+
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import type { FloorplanFile, FurnitureItem } from '../types';
 
@@ -194,5 +195,36 @@ The alternatives should be similar in style (e.g., Mid-Century Modern, Farmhouse
     } catch (error) {
         console.error("Error finding similar furniture:", error);
         throw new Error("Failed to find similar furniture.");
+    }
+};
+
+export const changeWallColor = async (base64Image: string, newColor: string): Promise<string> => {
+    try {
+        const prompt = `Change the color of the walls in this image to "${newColor}". Do not change the furniture, layout, lighting, windows, decor, or any other elements of the room. The architectural structure must remain identical. Only modify the wall color.`;
+
+        const imagePart = {
+            inlineData: {
+                data: base64Image,
+                mimeType: 'image/png',
+            },
+        };
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-image',
+            contents: { parts: [imagePart, { text: prompt }] },
+            config: {
+                responseModalities: [Modality.IMAGE],
+            },
+        });
+
+        for (const part of response.candidates[0].content.parts) {
+            if (part.inlineData) {
+              return part.inlineData.data;
+            }
+        }
+        throw new Error("No image data found in the recolored response.");
+    } catch (error) {
+        console.error("Error changing wall color:", error);
+        throw new Error("Failed to change the wall color. The AI may have been unable to process the request.");
     }
 };
