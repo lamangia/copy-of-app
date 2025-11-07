@@ -54,6 +54,15 @@ export const STORE_OPTIONS: Store[] = [
   ];
 
 // Icon Components
+export function MagicWandIcon() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M17.293 2.293a1 1 0 011.414 0l.001.001a1 1 0 010 1.414l-2.293 2.293-1-1L17.293 2.293z" />
+            <path d="M13.414 3.414a1 1 0 01.707.293l2.293 2.293a1 1 0 010 1.414l-9 9a1 1 0 01-1.414 0l-2.293-2.293a1 1 0 010-1.414l9-9a1 1 0 01.707-.293zm-2.121 9.121L13 14.243l1.707-1.707-1.707-1.707-1.707 1.707zM3 15.243L4.757 17 6.515 15.243 4.757 13.485 3 15.243zM2 8a1 1 0 011-1h1a1 1 0 010 2H3a1 1 0 01-1-1zm1-4a1 1 0 011-1h1a1 1 0 010 2H4a1 1 0 01-1-1zm3-3a1 1 0 011-1h1a1 1 0 010 2H7a1 1 0 01-1-1z" />
+        </svg>
+    );
+}
+
 export function MockupIcon() {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">

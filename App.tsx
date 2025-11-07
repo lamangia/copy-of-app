@@ -1,7 +1,7 @@
 // Fix: Removed unused GoogleGenAI import.
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture, changeWallColor } from './services/geminiService';
-import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS, MockupIcon } from './constants';
+import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture, changeWallColor, removeImageBackground } from './services/geminiService';
+import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS, MockupIcon, MagicWandIcon } from './constants';
 import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store, MockupFurnitureItem } from './types';
 import StepIndicator from './components/StepIndicator';
 import Loader from './components/Loader';
@@ -85,12 +85,16 @@ const App: React.FC = () => {
     const [recolorError, setRecolorError] = useState<string | null>(null);
     
     // State for Mockup Tool
+    const [mockupStep, setMockupStep] = useState<'setup' | 'canvas'>('setup');
     const [mockupRoomImage, setMockupRoomImage] = useState<string | null>(null);
     const [mockupFurniture, setMockupFurniture] = useState<MockupFurnitureItem[]>([]);
     const [furnitureLibrary, setFurnitureLibrary] = useState<{ id: string; src: string }[]>([]);
     const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
     const [actionState, setActionState] = useState<{ action: 'move' | 'resize' | 'rotate' | null; initialX: number; initialY: number; initialItemState?: MockupFurnitureItem }>({ action: null, initialX: 0, initialY: 0 });
     const mockupCanvasRef = useRef<HTMLDivElement>(null);
+    const [hasSavedMockup, setHasSavedMockup] = useState<boolean>(false);
+    const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle');
+    const [isDownloadingMockup, setIsDownloadingMockup] = useState<boolean>(false);
 
 
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -129,10 +133,15 @@ const App: React.FC = () => {
         return () => stopCamera();
     }, [step, inputMethod, arImageSrc]);
     
-    // Prevent screenshots/content saving
+    // Prevent screenshots/content saving & check for saved mockup
     useEffect(() => {
         const handleContextMenu = (e: MouseEvent) => e.preventDefault();
         document.addEventListener('contextmenu', handleContextMenu);
+
+        if (localStorage.getItem('roomGeniusMockupSave')) {
+            setHasSavedMockup(true);
+        }
+
         return () => {
             document.removeEventListener('contextmenu', handleContextMenu);
         };
@@ -487,6 +496,139 @@ const App: React.FC = () => {
     };
     
     // --- MOCKUP TOOL ---
+    const handleSaveMockup = () => {
+        const mockupState = {
+            mockupRoomImage,
+            mockupFurniture,
+            furnitureLibrary
+        };
+        try {
+            localStorage.setItem('roomGeniusMockupSave', JSON.stringify(mockupState));
+            setHasSavedMockup(true);
+            setSaveState('saved');
+            setTimeout(() => setSaveState('idle'), 2000);
+        } catch (error) {
+            console.error("Error saving mockup state:", error);
+            setErrorMessage("Could not save project. Local storage might be full.");
+        }
+    };
+
+    const handleLoadMockup = () => {
+        try {
+            const savedStateJSON = localStorage.getItem('roomGeniusMockupSave');
+            if (savedStateJSON) {
+                const savedState = JSON.parse(savedStateJSON);
+                setMockupRoomImage(savedState.mockupRoomImage || null);
+                setMockupFurniture(savedState.mockupFurniture || []);
+                setFurnitureLibrary(savedState.furnitureLibrary || []);
+                
+                setMockupStep('canvas');
+                setCurrentView('mockup');
+            }
+        } catch (error) {
+            console.error("Error loading mockup state:", error);
+            setErrorMessage("Could not load saved project. The data might be corrupted.");
+            localStorage.removeItem('roomGeniusMockupSave');
+            setHasSavedMockup(false);
+        }
+    };
+
+    const handleDownloadMockup = async () => {
+        if (!mockupRoomImage || !mockupCanvasRef.current) return;
+    
+        setIsDownloadingMockup(true);
+        setErrorMessage(null);
+    
+        try {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                throw new Error("Could not get canvas context");
+            }
+    
+            // 1. Load background image
+            const bgImage = await new Promise<HTMLImageElement>((resolve, reject) => {
+                const img = new Image();
+                img.crossOrigin = "anonymous";
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error("Failed to load background image."));
+                img.src = mockupRoomImage;
+            });
+    
+            canvas.width = bgImage.naturalWidth;
+            canvas.height = bgImage.naturalHeight;
+    
+            ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
+            
+            // 2. Calculate scaling factor from display to natural size
+            const containerRect = mockupCanvasRef.current.getBoundingClientRect();
+            const containerRatio = containerRect.width / containerRect.height;
+            const bgRatio = bgImage.naturalWidth / bgImage.naturalHeight;
+    
+            let renderedBgWidth, renderedBgHeight, offsetX, offsetY;
+            if (containerRatio > bgRatio) { // height-limited
+                renderedBgHeight = containerRect.height;
+                renderedBgWidth = renderedBgHeight * bgRatio;
+                offsetX = (containerRect.width - renderedBgWidth) / 2;
+                offsetY = 0;
+            } else { // width-limited
+                renderedBgWidth = containerRect.width;
+                renderedBgHeight = renderedBgWidth / bgRatio;
+                offsetX = 0;
+                offsetY = (containerRect.height - renderedBgHeight) / 2;
+            }
+    
+            const scaleFactor = bgImage.naturalWidth / renderedBgWidth;
+    
+            // 3. Load all furniture item images
+            const sortedFurniture = [...mockupFurniture].sort((a, b) => a.zIndex - b.zIndex);
+            
+            const itemImages = await Promise.all(sortedFurniture.map(item =>
+                new Promise<HTMLImageElement>((resolve, reject) => {
+                    const img = new Image();
+                    img.crossOrigin = "anonymous";
+                    img.onload = () => resolve(img);
+                    img.onerror = () => reject(new Error(`Failed to load furniture image: ${item.id}`));
+                    img.src = item.src;
+                })
+            ));
+    
+            // 4. Draw each furniture item
+            sortedFurniture.forEach((item, index) => {
+                const itemImg = itemImages[index];
+                const itemWidth = item.width * item.scale * scaleFactor;
+                const itemHeight = item.height * item.scale * scaleFactor;
+    
+                const canvasX = (item.x - offsetX) * scaleFactor;
+                const canvasY = (item.y - offsetY) * scaleFactor;
+    
+                const centerX = canvasX + itemWidth / 2;
+                const centerY = canvasY + itemHeight / 2;
+    
+                ctx.save();
+                ctx.translate(centerX, centerY);
+                ctx.rotate(item.rotation * Math.PI / 180);
+                ctx.drawImage(itemImg, -itemWidth / 2, -itemHeight / 2, itemWidth, itemHeight);
+                ctx.restore();
+            });
+    
+            // 5. Trigger download
+            const dataUrl = canvas.toDataURL('image/png');
+            const link = document.createElement('a');
+            link.href = dataUrl;
+            link.download = `${(projectName || 'room-genius').replace(/\s+/g, '-').toLowerCase()}-mockup.png`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+    
+        } catch (error) {
+            console.error("Error downloading mockup:", error);
+            setErrorMessage(`Sorry, the image could not be downloaded. ${(error as Error).message}`);
+        } finally {
+            setIsDownloadingMockup(false);
+        }
+    };
+
     const handleMockupRoomUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (file) {
@@ -507,29 +649,62 @@ const App: React.FC = () => {
             setFurnitureLibrary(prev => [...prev, ...newItems]);
         }
     };
+    
+    const initializeMockupCanvas = () => {
+        setMockupFurniture([]); // Start with an empty canvas
+        setMockupStep('canvas');
+    };
 
-    const addFurnitureToCanvas = (libItem: { id: string; src: string }) => {
-        const img = new Image();
-        img.src = libItem.src;
-        img.onload = () => {
-            const canvasRect = mockupCanvasRef.current?.getBoundingClientRect();
-            if (!canvasRect) return;
+    const handleLibraryItemDragStart = (e: React.DragEvent, libItem: { id: string; src: string }) => {
+        e.dataTransfer.setData('application/json', JSON.stringify(libItem));
+    };
 
-            // Add item to the center of the canvas
-            const newItem: MockupFurnitureItem = {
-                id: `item_${Date.now()}`,
-                src: libItem.src,
-                x: canvasRect.width / 2 - img.width / 4,
-                y: canvasRect.height / 2 - img.height / 4,
-                width: img.width / 2,
-                height: img.height / 2,
-                scale: 1,
-                rotation: 0,
-                zIndex: mockupFurniture.length + 1,
-            };
-            setMockupFurniture(prev => [...prev, newItem]);
-            setSelectedItemId(newItem.id);
+    const handleDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+    };
+
+    const handleDrop = async (e: React.DragEvent) => {
+        e.preventDefault();
+        if (!mockupCanvasRef.current) return;
+
+        const libItemJSON = e.dataTransfer.getData('application/json');
+        if (!libItemJSON) return;
+
+        const libItem = JSON.parse(libItemJSON);
+        if (!libItem || !libItem.src) return;
+
+        const canvasRect = mockupCanvasRef.current.getBoundingClientRect();
+
+        const defaultWidth = 150; 
+        const defaultHeight = 150;
+
+        const newItem: MockupFurnitureItem = {
+            id: `item_${Date.now()}_${Math.random()}`,
+            src: libItem.src,
+            x: e.clientX - canvasRect.left - (defaultWidth / 2),
+            y: e.clientY - canvasRect.top - (defaultHeight / 2),
+            width: defaultWidth,
+            height: defaultHeight,
+            scale: 1,
+            rotation: 0,
+            zIndex: Math.max(...mockupFurniture.map(f => f.zIndex), 0) + 1,
+            isLoading: true, // Set loading state immediately
         };
+
+        setMockupFurniture(prev => [...prev, newItem]);
+
+        try {
+            const newSrc = await removeImageBackground(newItem.src);
+            setMockupFurniture(prev => prev.map(i => 
+                i.id === newItem.id ? { ...i, src: newSrc, isLoading: false } : i
+            ));
+        } catch (error) {
+            console.error("Failed to remove background on drop:", error);
+            setErrorMessage("Could not automatically remove background. You can try again manually.");
+            setMockupFurniture(prev => prev.map(i => 
+                i.id === newItem.id ? { ...i, isLoading: false } : i
+            ));
+        }
     };
 
     const getEventCoords = (e: React.MouseEvent | React.TouchEvent) => {
@@ -548,7 +723,6 @@ const App: React.FC = () => {
         const { x, y } = getEventCoords(e);
         setActionState({ action, initialX: x, initialY: y, initialItemState: { ...currentItem } });
 
-        // Bring to front on move
         if(action === 'move') {
             const maxZ = Math.max(...mockupFurniture.map(f => f.zIndex), 0);
             setMockupFurniture(mf => mf.map(f => f.id === itemId ? {...f, zIndex: maxZ + 1} : f));
@@ -606,12 +780,29 @@ const App: React.FC = () => {
         };
     }, [handleInteractionMove, handleInteractionEnd]);
 
-    const handleDeleteItem = () => {
-        if (selectedItemId) {
-            setMockupFurniture(prev => prev.filter(item => item.id !== selectedItemId));
+    const handleDeleteItem = (itemId: string) => {
+        setMockupFurniture(prev => prev.filter(item => item.id !== itemId));
+        if (selectedItemId === itemId) {
             setSelectedItemId(null);
         }
     };
+    
+    const handleRemoveBackground = async (itemId: string) => {
+        const item = mockupFurniture.find(i => i.id === itemId);
+        if (!item || item.isLoading) return;
+
+        setMockupFurniture(prev => prev.map(i => i.id === itemId ? { ...i, isLoading: true } : i));
+
+        try {
+            const newSrc = await removeImageBackground(item.src);
+            setMockupFurniture(prev => prev.map(i => i.id === itemId ? { ...i, src: newSrc, isLoading: false } : i));
+        } catch (error) {
+            console.error("Failed to remove background:", error);
+            setErrorMessage("Could not remove background. Please try again.");
+            setMockupFurniture(prev => prev.map(i => i.id === itemId ? { ...i, isLoading: false } : i));
+        }
+    };
+
     // --- END MOCKUP TOOL ---
 
     const renderHeader = (title: string, subtitle: string) => (
@@ -653,7 +844,7 @@ const App: React.FC = () => {
                         <span className="mt-2 font-semibold text-slate-800">{room.name}</span>
                     </button>
                 ))}
-                <button onClick={() => setCurrentView('mockup')} className="col-span-2 flex flex-col items-center justify-center p-4 bg-slate-800 text-white rounded-xl border border-slate-700 shadow-sm hover:shadow-md hover:bg-slate-700 transition-all duration-200">
+                <button onClick={() => { setMockupStep('setup'); setCurrentView('mockup'); }} className="col-span-2 flex flex-col items-center justify-center p-4 bg-slate-800 text-white rounded-xl border border-slate-700 shadow-sm hover:shadow-md hover:bg-slate-700 transition-all duration-200">
                     <MockupIcon />
                     <span className="mt-2 font-semibold">Create a Mock Up</span>
                     <p className="text-xs text-slate-300 mt-1">Manually place furniture in your room</p>
@@ -1364,33 +1555,107 @@ const App: React.FC = () => {
     );
     
     const renderMockupTool = () => {
-        const selectedItem = mockupFurniture.find(item => item.id === selectedItemId);
+        if (mockupStep === 'setup') {
+            return (
+                <div className="p-4 flex flex-col items-center flex-grow">
+                    {renderHeader("Create Your Mock Up", "Upload a room photo and add your items.")}
+                    <div className="w-full max-w-sm space-y-6">
+                        {hasSavedMockup && (
+                            <div className="w-full">
+                                <button 
+                                    onClick={handleLoadMockup}
+                                    className="w-full bg-slate-600 text-white py-3 rounded-lg font-semibold hover:bg-slate-500 transition"
+                                >
+                                    Load Saved Project
+                                </button>
+                                <div className="text-center text-slate-500 my-3 text-sm font-semibold">OR</div>
+                            </div>
+                        )}
+                        <div>
+                            <label className="font-semibold text-slate-700">1. Your Room Photo</label>
+                            {mockupRoomImage ? (
+                                <div className="mt-2 relative">
+                                    <img src={mockupRoomImage} alt="Room preview" className="w-full rounded-lg shadow-md"/>
+                                    <button onClick={() => setMockupRoomImage(null)} className="absolute top-2 right-2 bg-black/50 text-white rounded-full p-1.5">&times;</button>
+                                </div>
+                            ) : (
+                                <label htmlFor="mockup-room-upload" className="mt-2 flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-stone-300 rounded-lg cursor-pointer hover:bg-stone-100">
+                                    <span className="text-slate-500 font-semibold">Upload Room Photo</span>
+                                </label>
+                            )}
+                            <input id="mockup-room-upload" type="file" className="hidden" accept="image/*" onChange={handleMockupRoomUpload} />
+                        </div>
+
+                        <div>
+                            <label className="font-semibold text-slate-700">2. Add Furniture & Decor</label>
+                            <div className="grid grid-cols-4 gap-2 mt-2">
+                                {furnitureLibrary.map(item => (
+                                    <div key={item.id} className="relative aspect-square">
+                                        <img src={item.src} alt="furniture item" className="w-full h-full object-cover rounded-md bg-stone-100 border"/>
+                                        <button onClick={() => setFurnitureLibrary(lib => lib.filter(i => i.id !== item.id))} className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-bold">&times;</button>
+                                    </div>
+                                ))}
+                                <label htmlFor="furniture-upload" className="flex flex-col items-center justify-center p-1 bg-stone-50 border-2 border-dashed border-stone-300 rounded-md cursor-pointer hover:bg-stone-100 aspect-square">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>
+                                    <span className="text-xs text-stone-500 mt-1 text-center">Add Item</span>
+                                </label>
+                                <input id="furniture-upload" type="file" className="hidden" accept="image/png, image/jpeg, image/webp" onChange={handleFurnitureLibraryUpload} multiple />
+                            </div>
+                        </div>
+
+                        <button 
+                            onClick={initializeMockupCanvas}
+                            disabled={!mockupRoomImage}
+                            className="w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed"
+                        >
+                            Start Designing
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // Canvas view
         return (
              <div className="flex flex-col h-full bg-stone-100">
                 <header className="flex items-center justify-between p-2 border-b border-stone-200 bg-white flex-shrink-0">
-                    <button onClick={() => setCurrentView('wizard')} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>
-                    <h2 className="font-semibold text-slate-700">Mock Up Visualizer</h2>
-                    <div className="w-10"></div>
+                    <button onClick={() => setMockupStep('setup')} className="p-2 rounded-md hover:bg-stone-200 text-sm font-semibold">&larr; Back to Setup</button>
+                    <div className="flex items-center gap-2 sm:gap-4">
+                        <h2 className="font-semibold text-slate-700 hidden sm:block">Arrange Your Room</h2>
+                        <button 
+                            onClick={handleSaveMockup}
+                            className={`py-1 px-3 text-sm font-semibold rounded-md transition ${
+                                saveState === 'saved'
+                                ? 'bg-green-600 text-white cursor-default'
+                                : 'bg-slate-700 text-white hover:bg-slate-600'
+                            }`}
+                        >
+                            {saveState === 'saved' ? 'Saved!' : 'Save Project'}
+                        </button>
+                        <button
+                            onClick={handleDownloadMockup}
+                            disabled={isDownloadingMockup}
+                            className="py-1 px-3 text-sm font-semibold rounded-md transition bg-slate-800 text-white hover:bg-slate-700 disabled:bg-slate-500 disabled:cursor-wait"
+                        >
+                            {isDownloadingMockup ? 'Saving...' : 'Download'}
+                        </button>
+                    </div>
+                     <button onClick={handleExitMockup} className="p-2 rounded-md hover:bg-stone-200 text-sm font-semibold">Exit &rarr;</button>
                 </header>
                 <main className="flex-grow flex flex-col md:flex-row overflow-hidden">
-                    <div ref={mockupCanvasRef} className="relative flex-grow bg-stone-200 overflow-hidden" onClick={() => setSelectedItemId(null)}>
-                        {!mockupRoomImage ? (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center p-4">
-                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                                <h3 className="font-serif text-xl font-semibold mt-4 text-slate-700">Start Your Mock Up</h3>
-                                <p className="text-slate-500 mb-4 text-center">Upload a photo of your room to begin.</p>
-                                <label htmlFor="mockup-room-upload" className="bg-slate-800 text-white py-2 px-5 rounded-lg font-semibold hover:bg-slate-700 transition cursor-pointer">
-                                    Upload Room Photo
-                                </label>
-                                <input id="mockup-room-upload" type="file" className="hidden" accept="image/*" onChange={handleMockupRoomUpload} />
-                            </div>
-                        ) : (
-                            <img src={mockupRoomImage} className="w-full h-full object-contain" alt="User's room" />
-                        )}
+                    <div 
+                        ref={mockupCanvasRef} 
+                        className="relative flex-grow bg-stone-200 overflow-hidden" 
+                        onClick={() => setSelectedItemId(null)}
+                        onDragOver={handleDragOver}
+                        onDrop={handleDrop}
+                    >
+                        {mockupRoomImage && <img src={mockupRoomImage} className="w-full h-full object-contain pointer-events-none" alt="User's room" />}
+                        
                         {mockupFurniture.map(item => (
                             <div
                                 key={item.id}
-                                className="absolute cursor-move"
+                                className="absolute cursor-move group"
                                 style={{
                                     left: item.x,
                                     top: item.y,
@@ -1402,12 +1667,25 @@ const App: React.FC = () => {
                                 onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'move')}
                                 onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'move')}
                             >
-                                <img src={item.src} className="w-full h-full pointer-events-none" alt="furniture item" />
+                                <img src={item.src} className="w-full h-full pointer-events-none object-contain" alt="furniture item" />
+                                {item.isLoading && (
+                                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                                        <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                    </div>
+                                )}
                                 {selectedItemId === item.id && (
                                     <>
                                         <div className="absolute -inset-1 border-2 border-slate-600 border-dashed pointer-events-none"></div>
+                                        <div className="absolute -top-4 -right-4 flex space-x-1 p-1 bg-white rounded-full shadow-lg">
+                                             <button onClick={() => handleRemoveBackground(item.id)} disabled={item.isLoading} className="w-7 h-7 flex items-center justify-center bg-stone-100 hover:bg-stone-200 rounded-full text-slate-700 disabled:opacity-50" title="Remove Background">
+                                                <MagicWandIcon />
+                                            </button>
+                                            <button onClick={() => handleDeleteItem(item.id)} className="w-7 h-7 flex items-center justify-center bg-red-100 hover:bg-red-200 rounded-full text-red-700" title="Delete Item">
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>
+                                            </button>
+                                        </div>
                                         <div 
-                                            className="absolute -top-3 -right-3 w-6 h-6 bg-white border-2 border-slate-600 rounded-full cursor-nwse-resize"
+                                            className="absolute -bottom-3 -right-3 w-6 h-6 bg-white border-2 border-slate-600 rounded-full cursor-nwse-resize"
                                             onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'resize')}
                                             onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'resize')}
                                         ></div>
@@ -1421,28 +1699,22 @@ const App: React.FC = () => {
                             </div>
                         ))}
                     </div>
-                     <div className="flex-shrink-0 bg-white border-t md:border-t-0 md:border-l border-stone-200 w-full md:w-64 p-2 flex flex-col">
-                         <h3 className="font-semibold text-slate-800 p-2 text-center">Furniture Library</h3>
-                         {selectedItem && (
-                            <div className="p-2 border-b border-stone-200 mb-2">
-                                <button onClick={handleDeleteItem} className="w-full py-2 px-3 text-sm font-semibold rounded-md bg-red-100 text-red-700 hover:bg-red-200 transition border border-red-200">
-                                    Delete Selected
-                                </button>
-                            </div>
-                         )}
-                         <div className="grid grid-cols-4 md:grid-cols-2 gap-2 overflow-y-auto flex-grow">
-                             {furnitureLibrary.map(item => (
-                                <div key={item.id} onClick={() => addFurnitureToCanvas(item)} className="p-1 bg-stone-100 rounded-md cursor-pointer hover:bg-stone-200 aspect-square">
-                                    <img src={item.src} className="w-full h-full object-contain" alt="furniture library item" />
+                    <aside className="flex-shrink-0 bg-white border-t md:border-t-0 md:border-l border-stone-200 p-2 overflow-y-auto md:w-48">
+                        <h3 className="font-semibold text-slate-700 mb-2 text-center md:text-left">Your Items</h3>
+                        <div className="flex flex-row md:grid md:grid-cols-2 gap-2 overflow-x-auto md:overflow-x-visible pb-2">
+                            {furnitureLibrary.map(libItem => (
+                                <div 
+                                    key={libItem.id} 
+                                    draggable="true" 
+                                    onDragStart={(e) => handleLibraryItemDragStart(e, libItem)} 
+                                    className="cursor-grab aspect-square bg-stone-100 rounded-md border hover:border-slate-400 p-1 w-24 h-24 flex-shrink-0 md:w-auto md:h-auto"
+                                    title="Drag me to the canvas"
+                                >
+                                    <img src={libItem.src} className="w-full h-full object-contain pointer-events-none" alt="Library item"/>
                                 </div>
-                             ))}
-                             <label htmlFor="furniture-upload" className="flex flex-col items-center justify-center p-1 bg-stone-50 border-2 border-dashed border-stone-300 rounded-md cursor-pointer hover:bg-stone-100 aspect-square">
-                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>
-                                 <span className="text-xs text-stone-500 mt-1 text-center">Add Item</span>
-                             </label>
-                             <input id="furniture-upload" type="file" className="hidden" accept="image/png, image/jpeg, image/webp" onChange={handleFurnitureLibraryUpload} multiple />
-                         </div>
-                     </div>
+                            ))}
+                        </div>
+                    </aside>
                 </main>
             </div>
         );
@@ -1461,6 +1733,16 @@ const App: React.FC = () => {
         }
     };
     
+    const handleExitMockup = () => {
+        setCurrentView('wizard');
+        // Reset mockup state for a clean slate next time, but don't clear the saved project
+        setMockupRoomImage(null);
+        setFurnitureLibrary([]);
+        setMockupFurniture([]);
+        setSelectedItemId(null);
+        setMockupStep('setup');
+    }
+
     return (
         <div className="min-h-screen bg-stone-50 flex flex-col">
             {arImageSrc && renderARView()}
@@ -1507,19 +1789,17 @@ const App: React.FC = () => {
                                     <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
                                 </div>
                             )}
-                            <div className="flex-grow flex flex-col">
+                            {/* FIX: Replaced malformed text with a call to render the current step's content. */}
                             {renderCurrentStep()}
-                            </div>
                         </div>
                     </main>
                 </div>
             ) : (
-                <div className="w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow">
-                    {renderMockupTool()}
-                </div>
+                renderMockupTool()
             )}
         </div>
     );
 };
 
+// FIX: Added a default export for the App component to be properly imported in index.tsx.
 export default App;

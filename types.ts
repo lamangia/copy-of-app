@@ -74,4 +74,5 @@ export interface MockupFurnitureItem {
   scale: number;
   rotation: number;
   zIndex: number;
+  isLoading?: boolean;
 }

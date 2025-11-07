@@ -1,6 +1,7 @@
 
 
 
+
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import type { FloorplanFile, FurnitureItem } from '../types';
 
@@ -226,5 +227,44 @@ export const changeWallColor = async (base64Image: string, newColor: string): Pr
     } catch (error) {
         console.error("Error changing wall color:", error);
         throw new Error("Failed to change the wall color. The AI may have been unable to process the request.");
+    }
+};
+
+export const removeImageBackground = async (base64Image: string): Promise<string> => {
+    try {
+        const prompt = "Your task is to perform a professional-quality cutout of the main furniture item in this image. Create a 'deep etch' or 'clipping path' style cutout. The result should be the furniture object isolated on a fully transparent background. Remove all background elements, shadows, and any other objects completely. The edges of the cutout must be clean, sharp, and precise. The final output must be a PNG file with an alpha channel for transparency.";
+
+        const match = base64Image.match(/^data:(.+);base64,(.+)$/);
+        if (!match) {
+            throw new Error("Invalid data URL format for image.");
+        }
+        const mimeType = match[1];
+        const data = match[2];
+
+        const imagePart = {
+            inlineData: {
+                data: data,
+                mimeType: mimeType,
+            },
+        };
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-image',
+            contents: { parts: [imagePart, { text: prompt }] },
+            config: {
+                responseModalities: [Modality.IMAGE],
+            },
+        });
+
+        for (const part of response.candidates[0].content.parts) {
+            if (part.inlineData) {
+              // The API returns just the base64 data, so we prepend the data URL scheme
+              return `data:image/png;base64,${part.inlineData.data}`;
+            }
+        }
+        throw new Error("No image data found in the background removal response.");
+    } catch (error) {
+        console.error("Error removing image background:", error);
+        throw new Error("Failed to remove the image background. The AI may have been unable to process the request.");
     }
 };
