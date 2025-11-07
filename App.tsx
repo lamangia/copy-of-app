@@ -1,7 +1,7 @@
 // Fix: Removed unused GoogleGenAI import.
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture, changeWallColor, removeImageBackground } from './services/geminiService';
-import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS, MockupIcon, MagicWandIcon } from './constants';
+import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS, MockupIcon, MagicWandIcon, FlipHorizontalIcon, FlipVerticalIcon } from './constants';
 import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store, MockupFurnitureItem } from './types';
 import StepIndicator from './components/StepIndicator';
 import Loader from './components/Loader';
@@ -28,6 +28,13 @@ const dataURLtoFile = async (dataUrl: string, filename: string): Promise<File | 
     }
 };
 
+interface SnapLine {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  key: string;
+}
 
 const App: React.FC = () => {
     const [step, setStep] = useState<number>(1);
@@ -95,6 +102,7 @@ const App: React.FC = () => {
     const [hasSavedMockup, setHasSavedMockup] = useState<boolean>(false);
     const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle');
     const [isDownloadingMockup, setIsDownloadingMockup] = useState<boolean>(false);
+    const [snapLines, setSnapLines] = useState<SnapLine[]>([]);
 
 
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -608,6 +616,7 @@ const App: React.FC = () => {
                 ctx.save();
                 ctx.translate(centerX, centerY);
                 ctx.rotate(item.rotation * Math.PI / 180);
+                ctx.scale(item.flipHorizontal ? -1 : 1, item.flipVertical ? -1 : 1);
                 ctx.drawImage(itemImg, -itemWidth / 2, -itemHeight / 2, itemWidth, itemHeight);
                 ctx.restore();
             });
@@ -689,6 +698,8 @@ const App: React.FC = () => {
             rotation: 0,
             zIndex: Math.max(...mockupFurniture.map(f => f.zIndex), 0) + 1,
             isLoading: true, // Set loading state immediately
+            flipHorizontal: false,
+            flipVertical: false,
         };
 
         setMockupFurniture(prev => [...prev, newItem]);
@@ -730,40 +741,131 @@ const App: React.FC = () => {
     };
 
     const handleInteractionMove = useCallback((e: MouseEvent | TouchEvent) => {
-        if (!actionState.action || !actionState.initialItemState) return;
+        if (!actionState.action || !actionState.initialItemState || !mockupCanvasRef.current) return;
         e.preventDefault();
 
         const { x: currentX, y: currentY } = getEventCoords(e as any);
         const deltaX = currentX - actionState.initialX;
         const deltaY = currentY - actionState.initialY;
 
-        setMockupFurniture(prev => prev.map(item => {
-            if (item.id !== actionState.initialItemState!.id) return item;
+        setMockupFurniture(prev => {
+            const newFurniture = prev.map(item => {
+                if (item.id !== actionState.initialItemState!.id) return item;
 
-            let updatedItem = { ...item };
+                let updatedItem = { ...item };
+                
+                // 1. Apply default transformation
+                if (actionState.action === 'move') {
+                    updatedItem.x = actionState.initialItemState!.x + deltaX;
+                    updatedItem.y = actionState.initialItemState!.y + deltaY;
+                } else if (actionState.action === 'resize') {
+                     const originalDist = Math.sqrt(Math.pow(actionState.initialItemState!.width, 2) + Math.pow(actionState.initialItemState!.height, 2));
+                     const newDist = Math.sqrt(Math.pow(actionState.initialItemState!.width + deltaX, 2) + Math.pow(actionState.initialItemState!.height + deltaY, 2));
+                     updatedItem.scale = actionState.initialItemState!.scale * (newDist/originalDist);
+                } else if (actionState.action === 'rotate') {
+                    const itemCenterX = item.x + (item.width * item.scale) / 2;
+                    const itemCenterY = item.y + (item.height * item.scale) / 2;
+                    const angle1 = Math.atan2(actionState.initialY - itemCenterY, actionState.initialX - itemCenterX);
+                    const angle2 = Math.atan2(currentY - itemCenterY, currentX - itemCenterX);
+                    updatedItem.rotation = actionState.initialItemState!.rotation + (angle2 - angle1) * (180 / Math.PI);
+                }
+                
+                return updatedItem;
+            });
             
-            if (actionState.action === 'move') {
-                updatedItem.x = actionState.initialItemState!.x + deltaX;
-                updatedItem.y = actionState.initialItemState!.y + deltaY;
-            } else if (actionState.action === 'resize') {
-                 const originalDist = Math.sqrt(Math.pow(actionState.initialItemState!.width, 2) + Math.pow(actionState.initialItemState!.height, 2));
-                 const newDist = Math.sqrt(Math.pow(actionState.initialItemState!.width + deltaX, 2) + Math.pow(actionState.initialItemState!.height + deltaY, 2));
-                 updatedItem.scale = actionState.initialItemState!.scale * (newDist/originalDist);
-            } else if (actionState.action === 'rotate') {
-                const itemCenterX = item.x + (item.width * item.scale) / 2;
-                const itemCenterY = item.y + (item.height * item.scale) / 2;
-                const angle1 = Math.atan2(actionState.initialY - itemCenterY, actionState.initialX - itemCenterX);
-                const angle2 = Math.atan2(currentY - itemCenterY, currentX - itemCenterX);
-                updatedItem.rotation = actionState.initialItemState!.rotation + (angle2 - angle1) * (180 / Math.PI);
+            // 2. Apply snapping for 'move' action
+            const newSnapLines: SnapLine[] = [];
+            const movingItemIndex = newFurniture.findIndex(item => item.id === actionState.initialItemState!.id);
+            if (actionState.action === 'move' && movingItemIndex !== -1) {
+                const movingItem = newFurniture[movingItemIndex];
+                const snapThreshold = 10;
+                
+                const movingItemWidth = movingItem.width * movingItem.scale;
+                const movingItemHeight = movingItem.height * movingItem.scale;
+                
+                const movingBounds = {
+                    left: movingItem.x,
+                    right: movingItem.x + movingItemWidth,
+                    top: movingItem.y,
+                    bottom: movingItem.y + movingItemHeight,
+                    centerX: movingItem.x + movingItemWidth / 2,
+                    centerY: movingItem.y + movingItemHeight / 2,
+                };
+
+                const canvasRect = mockupCanvasRef.current.getBoundingClientRect();
+                
+                const xTargets: {value: number, min: number, max: number}[] = [{value: canvasRect.width / 2, min: 0, max: canvasRect.height}];
+                const yTargets: {value: number, min: number, max: number}[] = [{value: canvasRect.height / 2, min: 0, max: canvasRect.width}];
+
+                newFurniture.forEach(item => {
+                    if (item.id === movingItem.id) return;
+                    const staticItemWidth = item.width * item.scale;
+                    const staticItemHeight = item.height * item.scale;
+                    
+                    xTargets.push(
+                        {value: item.x, min: Math.min(movingBounds.top, item.y), max: Math.max(movingBounds.bottom, item.y + staticItemHeight)},
+                        {value: item.x + staticItemWidth / 2, min: Math.min(movingBounds.top, item.y), max: Math.max(movingBounds.bottom, item.y + staticItemHeight)},
+                        {value: item.x + staticItemWidth, min: Math.min(movingBounds.top, item.y), max: Math.max(movingBounds.bottom, item.y + staticItemHeight)}
+                    );
+                    yTargets.push(
+                        {value: item.y, min: Math.min(movingBounds.left, item.x), max: Math.max(movingBounds.right, item.x + staticItemWidth)},
+                        {value: item.y + staticItemHeight / 2, min: Math.min(movingBounds.left, item.x), max: Math.max(movingBounds.right, item.x + staticItemWidth)},
+                        {value: item.y + staticItemHeight, min: Math.min(movingBounds.left, item.x), max: Math.max(movingBounds.right, item.x + staticItemWidth)}
+                    );
+                });
+                
+                for (const target of xTargets) {
+                    if (Math.abs(movingBounds.left - target.value) < snapThreshold) {
+                        newFurniture[movingItemIndex].x = target.value;
+                        newSnapLines.push({ x1: target.value, y1: target.min, x2: target.value, y2: target.max, key: `vx-${target.value}` });
+                        break;
+                    }
+                    if (Math.abs(movingBounds.right - target.value) < snapThreshold) {
+                        newFurniture[movingItemIndex].x = target.value - movingItemWidth;
+                        newSnapLines.push({ x1: target.value, y1: target.min, x2: target.value, y2: target.max, key: `vx-${target.value}` });
+                        break;
+                    }
+                    if (Math.abs(movingBounds.centerX - target.value) < snapThreshold) {
+                        newFurniture[movingItemIndex].x = target.value - movingItemWidth / 2;
+                        newSnapLines.push({ x1: target.value, y1: target.min, x2: target.value, y2: target.max, key: `vx-${target.value}` });
+                        break;
+                    }
+                }
+
+                const finalMovingBounds = {
+                    top: newFurniture[movingItemIndex].y,
+                    bottom: newFurniture[movingItemIndex].y + movingItemHeight,
+                    centerY: newFurniture[movingItemIndex].y + movingItemHeight / 2,
+                };
+                
+                for (const target of yTargets) {
+                     if (Math.abs(finalMovingBounds.top - target.value) < snapThreshold) {
+                        newFurniture[movingItemIndex].y = target.value;
+                        newSnapLines.push({ x1: target.min, y1: target.value, x2: target.max, y2: target.value, key: `hy-${target.value}` });
+                        break;
+                    }
+                    if (Math.abs(finalMovingBounds.bottom - target.value) < snapThreshold) {
+                        newFurniture[movingItemIndex].y = target.value - movingItemHeight;
+                        newSnapLines.push({ x1: target.min, y1: target.value, x2: target.max, y2: target.value, key: `hy-${target.value}` });
+                        break;
+                    }
+                    if (Math.abs(finalMovingBounds.centerY - target.value) < snapThreshold) {
+                        newFurniture[movingItemIndex].y = target.value - movingItemHeight / 2;
+                        newSnapLines.push({ x1: target.min, y1: target.value, x2: target.max, y2: target.value, key: `hy-${target.value}` });
+                        break;
+                    }
+                }
             }
             
-            return updatedItem;
-        }));
+            setSnapLines(newSnapLines);
+            return newFurniture;
+        });
 
     }, [actionState]);
 
     const handleInteractionEnd = useCallback(() => {
         setActionState({ action: null, initialX: 0, initialY: 0 });
+        setSnapLines([]);
     }, []);
 
     useEffect(() => {
@@ -801,6 +903,19 @@ const App: React.FC = () => {
             setErrorMessage("Could not remove background. Please try again.");
             setMockupFurniture(prev => prev.map(i => i.id === itemId ? { ...i, isLoading: false } : i));
         }
+    };
+
+    const handleFlip = (itemId: string, direction: 'horizontal' | 'vertical') => {
+        setMockupFurniture(prev => prev.map(item => {
+            if (item.id === itemId) {
+                if (direction === 'horizontal') {
+                    return { ...item, flipHorizontal: !item.flipHorizontal };
+                } else { // vertical
+                    return { ...item, flipVertical: !item.flipVertical };
+                }
+            }
+            return item;
+        }));
     };
 
     // --- END MOCKUP TOOL ---
@@ -1652,6 +1767,19 @@ const App: React.FC = () => {
                     >
                         {mockupRoomImage && <img src={mockupRoomImage} className="w-full h-full object-contain pointer-events-none" alt="User's room" />}
                         
+                        {snapLines.map(line => (
+                            <div
+                                key={line.key}
+                                className="absolute bg-red-500 pointer-events-none"
+                                style={{
+                                    left: Math.min(line.x1, line.x2),
+                                    top: Math.min(line.y1, line.y2),
+                                    width: line.y1 === line.y2 ? Math.abs(line.x1 - line.x2) : 1,
+                                    height: line.x1 === line.x2 ? Math.abs(line.y1 - line.y2) : 1,
+                                }}
+                            ></div>
+                        ))}
+
                         {mockupFurniture.map(item => (
                             <div
                                 key={item.id}
@@ -1667,7 +1795,14 @@ const App: React.FC = () => {
                                 onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'move')}
                                 onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'move')}
                             >
-                                <img src={item.src} className="w-full h-full pointer-events-none object-contain" alt="furniture item" />
+                                <div style={{ 
+                                    width: '100%', 
+                                    height: '100%', 
+                                    transform: `scaleX(${item.flipHorizontal ? -1 : 1}) scaleY(${item.flipVertical ? -1 : 1})`
+                                }}>
+                                    <img src={item.src} className="w-full h-full pointer-events-none object-contain" alt="furniture item" />
+                                </div>
+
                                 {item.isLoading && (
                                     <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
                                         <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
@@ -1676,9 +1811,15 @@ const App: React.FC = () => {
                                 {selectedItemId === item.id && (
                                     <>
                                         <div className="absolute -inset-1 border-2 border-slate-600 border-dashed pointer-events-none"></div>
-                                        <div className="absolute -top-4 -right-4 flex space-x-1 p-1 bg-white rounded-full shadow-lg">
-                                             <button onClick={() => handleRemoveBackground(item.id)} disabled={item.isLoading} className="w-7 h-7 flex items-center justify-center bg-stone-100 hover:bg-stone-200 rounded-full text-slate-700 disabled:opacity-50" title="Remove Background">
+                                        <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center space-x-1 p-1 bg-white rounded-full shadow-lg">
+                                             <button onClick={() => handleRemoveBackground(item.id)} disabled={item.isLoading} className="w-7 h-7 flex items-center justify-center bg-stone-100 hover:bg-stone-200 rounded-full text-slate-700 disabled:opacity-50" title="Cut Out / Remove Background">
                                                 <MagicWandIcon />
+                                            </button>
+                                            <button onClick={() => handleFlip(item.id, 'horizontal')} className="w-7 h-7 flex items-center justify-center bg-stone-100 hover:bg-stone-200 rounded-full text-slate-700" title="Flip Horizontal">
+                                                <FlipHorizontalIcon />
+                                            </button>
+                                            <button onClick={() => handleFlip(item.id, 'vertical')} className="w-7 h-7 flex items-center justify-center bg-stone-100 hover:bg-stone-200 rounded-full text-slate-700" title="Flip Vertical">
+                                                <FlipVerticalIcon />
                                             </button>
                                             <button onClick={() => handleDeleteItem(item.id)} className="w-7 h-7 flex items-center justify-center bg-red-100 hover:bg-red-200 rounded-full text-red-700" title="Delete Item">
                                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>

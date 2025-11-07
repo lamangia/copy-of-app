@@ -75,4 +75,6 @@ export interface MockupFurnitureItem {
   rotation: number;
   zIndex: number;
   isLoading?: boolean;
+  flipHorizontal?: boolean;
+  flipVertical?: boolean;
 }

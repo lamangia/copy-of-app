@@ -72,6 +72,24 @@ export function MockupIcon() {
     );
 }
 
+export function FlipHorizontalIcon() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M4 12a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1z" />
+            <path fillRule="evenodd" d="M10 18a1 1 0 01-1-1V3a1 1 0 112 0v14a1 1 0 01-1 1zM3 10a1 1 0 011-1h3a1 1 0 110 2H4a1 1 0 01-1-1zM13 9a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
+        </svg>
+    );
+}
+
+export function FlipVerticalIcon() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M8 4a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1zM5 8a1 1 0 011-1h8a1 1 0 110 2H6a1 1 0 01-1-1zm1 5a1 1 0 100 2h6a1 1 0 100-2H6z" />
+            <path fillRule="evenodd" d="M2 10a1 1 0 011-1h14a1 1 0 110 2H3a1 1 0 01-1-1z" clipRule="evenodd" />
+        </svg>
+    );
+}
+
 function SofaIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
