@@ -1,20 +1,12 @@
 // Fix: Removed unused GoogleGenAI import.
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture, changeWallColor, removeImageBackground } from './services/geminiService';
-import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS, MockupIcon, MagicWandIcon, FlipHorizontalIcon, FlipVerticalIcon } from './constants';
-import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store, MockupFurnitureItem } from './types';
+import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture } from './services/geminiService';
+import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS } from './constants';
+import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store } from './types';
 import StepIndicator from './components/StepIndicator';
 import Loader from './components/Loader';
 
 const TOTAL_STEPS = 7;
-
-const PRESET_COLORS = [
-    { name: 'Sage Green', hex: '#B2AC88' },
-    { name: 'Warm Beige', hex: '#F5F5DC' },
-    { name: 'Light Gray', hex: '#D3D3D3' },
-    { name: 'Navy Blue', hex: '#000080' },
-    { name: 'Terracotta', hex: '#E2725B' },
-];
 
 // Helper to convert a data URL to a File object
 const dataURLtoFile = async (dataUrl: string, filename: string): Promise<File | null> => {
@@ -27,14 +19,6 @@ const dataURLtoFile = async (dataUrl: string, filename: string): Promise<File | 
         return null;
     }
 };
-
-interface SnapLine {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  key: string;
-}
 
 const App: React.FC = () => {
     const [step, setStep] = useState<number>(1);
@@ -55,9 +39,6 @@ const App: React.FC = () => {
     const [generatedImages, setGeneratedImages] = useState<string[]>([]);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     
-    // State for different app views
-    const [currentView, setCurrentView] = useState<'wizard' | 'mockup'>('wizard');
-
     // State for new subscription flow
     const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState<boolean>(false);
     const [unlockedDesigns, setUnlockedDesigns] = useState<boolean>(false);
@@ -65,6 +46,9 @@ const App: React.FC = () => {
     // State for Project Dashboard
     const [isDashboardOpen, setIsDashboardOpen] = useState<boolean>(false);
 
+    // State for new Palettes feature
+    const [savedPalettes, setSavedPalettes] = useState<{id: number, colors: string}[]>([]);
+    const [isPalettesViewOpen, setIsPalettesViewOpen] = useState<boolean>(false);
 
     // State for Step 5: Shopping
     const [selectedImageForShopping, setSelectedImageForShopping] = useState<string | null>(null);
@@ -83,27 +67,6 @@ const App: React.FC = () => {
     const [arImageSrc, setArImageSrc] = useState<string | null>(null);
     const [arOpacity, setArOpacity] = useState<number>(0.7);
 
-    // State for Wall Recolor
-    const [isRecolorModalOpen, setIsRecolorModalOpen] = useState<boolean>(false);
-    const [imageToRecolor, setImageToRecolor] = useState<{ src: string; index: number } | null>(null);
-    const [newWallColor, setNewWallColor] = useState<string>('');
-    const [previewWallColor, setPreviewWallColor] = useState<string>('');
-    const [isRecoloring, setIsRecoloring] = useState<boolean>(false);
-    const [recolorError, setRecolorError] = useState<string | null>(null);
-    
-    // State for Mockup Tool
-    const [mockupStep, setMockupStep] = useState<'setup' | 'canvas'>('setup');
-    const [mockupRoomImage, setMockupRoomImage] = useState<string | null>(null);
-    const [mockupFurniture, setMockupFurniture] = useState<MockupFurnitureItem[]>([]);
-    const [furnitureLibrary, setFurnitureLibrary] = useState<{ id: string; src: string }[]>([]);
-    const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-    const [actionState, setActionState] = useState<{ action: 'move' | 'resize' | 'rotate' | null; initialX: number; initialY: number; initialItemState?: MockupFurnitureItem }>({ action: null, initialX: 0, initialY: 0 });
-    const mockupCanvasRef = useRef<HTMLDivElement>(null);
-    const [hasSavedMockup, setHasSavedMockup] = useState<boolean>(false);
-    const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle');
-    const [isDownloadingMockup, setIsDownloadingMockup] = useState<boolean>(false);
-    const [snapLines, setSnapLines] = useState<SnapLine[]>([]);
-
 
     const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -116,11 +79,24 @@ const App: React.FC = () => {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
                 if (videoRef.current) {
                     videoRef.current.srcObject = stream;
+                    setErrorMessage(null); // Clear error on success
                 }
             } catch (err) {
                 console.error("Error accessing camera: ", err);
-                setErrorMessage("Could not access camera. Please check permissions.");
+                if (err instanceof DOMException) {
+                    if (err.name === 'NotAllowedError') {
+                        setErrorMessage("Camera access was denied. Please enable it in your browser settings to use this feature.");
+                    } else if (err.name === 'NotFoundError') {
+                        setErrorMessage("No camera found on this device. Please connect a camera.");
+                    } else {
+                         setErrorMessage("An error occurred while accessing the camera. It might be in use by another application.");
+                    }
+                } else {
+                     setErrorMessage("Could not access camera. Please check permissions.");
+                }
             }
+        } else {
+            setErrorMessage("Camera access is not supported by your browser.");
         }
     };
 
@@ -141,14 +117,10 @@ const App: React.FC = () => {
         return () => stopCamera();
     }, [step, inputMethod, arImageSrc]);
     
-    // Prevent screenshots/content saving & check for saved mockup
+    // Prevent screenshots/content saving
     useEffect(() => {
         const handleContextMenu = (e: MouseEvent) => e.preventDefault();
         document.addEventListener('contextmenu', handleContextMenu);
-
-        if (localStorage.getItem('roomGeniusMockupSave')) {
-            setHasSavedMockup(true);
-        }
 
         return () => {
             document.removeEventListener('contextmenu', handleContextMenu);
@@ -169,15 +141,6 @@ const App: React.FC = () => {
         });
     };
     
-    const fileToDataUrl = (file: File): Promise<string> => {
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.readAsDataURL(file);
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = (error) => reject(error);
-        });
-    };
-
     const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (file) {
@@ -423,7 +386,7 @@ const App: React.FC = () => {
         });
     };
     
-    const handleSaveDesign = async (base64Image: string) => {
+    const handleShareDesign = async (base64Image: string) => {
         try {
             const watermarkedDataUrl = await addWatermark(base64Image);
             const fileName = `roomgenius-design-${Date.now()}.png`;
@@ -463,462 +426,22 @@ const App: React.FC = () => {
         }
     };
 
-    const handleOpenRecolorModal = (src: string, index: number) => {
-        setImageToRecolor({ src, index });
-        setNewWallColor('');
-        setPreviewWallColor('');
-        setRecolorError(null);
-        setIsRecoloring(false);
-        setIsRecolorModalOpen(true);
-    };
-
-    const handleCloseRecolorModal = () => {
-        setIsRecolorModalOpen(false);
-        setImageToRecolor(null);
-        setPreviewWallColor('');
-    };
-
-    const handleRecolorSubmit = async () => {
-        if (!newWallColor || !imageToRecolor) return;
-
-        setIsRecoloring(true);
-        setRecolorError(null);
-
-        try {
-            const { src, index } = imageToRecolor;
-            const recoloredImage = await changeWallColor(src, newWallColor);
-
-            setGeneratedImages(prev => {
-                const newImages = [...prev];
-                newImages[index] = recoloredImage;
-                return newImages;
-            });
-
-            handleCloseRecolorModal();
-
-        } catch (error) {
-            setRecolorError("Sorry, we couldn't recolor the walls. Please try a different color or try again.");
-        } finally {
-            setIsRecoloring(false);
-        }
-    };
-    
-    // --- MOCKUP TOOL ---
-    const handleSaveMockup = () => {
-        const mockupState = {
-            mockupRoomImage,
-            mockupFurniture,
-            furnitureLibrary
-        };
-        try {
-            localStorage.setItem('roomGeniusMockupSave', JSON.stringify(mockupState));
-            setHasSavedMockup(true);
-            setSaveState('saved');
-            setTimeout(() => setSaveState('idle'), 2000);
-        } catch (error) {
-            console.error("Error saving mockup state:", error);
-            setErrorMessage("Could not save project. Local storage might be full.");
+    const handleSavePalette = () => {
+        const trimmedPalette = colorPalette.trim();
+        if (trimmedPalette && !savedPalettes.some(p => p.colors.toLowerCase() === trimmedPalette.toLowerCase())) {
+            setSavedPalettes(prev => [...prev, { id: Date.now(), colors: trimmedPalette }]);
         }
     };
 
-    const handleLoadMockup = () => {
-        try {
-            const savedStateJSON = localStorage.getItem('roomGeniusMockupSave');
-            if (savedStateJSON) {
-                const savedState = JSON.parse(savedStateJSON);
-                setMockupRoomImage(savedState.mockupRoomImage || null);
-                setMockupFurniture(savedState.mockupFurniture || []);
-                setFurnitureLibrary(savedState.furnitureLibrary || []);
-                
-                setMockupStep('canvas');
-                setCurrentView('mockup');
-            }
-        } catch (error) {
-            console.error("Error loading mockup state:", error);
-            setErrorMessage("Could not load saved project. The data might be corrupted.");
-            localStorage.removeItem('roomGeniusMockupSave');
-            setHasSavedMockup(false);
-        }
+    const handleDeletePalette = (id: number) => {
+        setSavedPalettes(prev => prev.filter(p => p.id !== id));
     };
 
-    const handleDownloadMockup = async () => {
-        if (!mockupRoomImage || !mockupCanvasRef.current) return;
-    
-        setIsDownloadingMockup(true);
-        setErrorMessage(null);
-    
-        try {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            if (!ctx) {
-                throw new Error("Could not get canvas context");
-            }
-    
-            // 1. Load background image
-            const bgImage = await new Promise<HTMLImageElement>((resolve, reject) => {
-                const img = new Image();
-                img.crossOrigin = "anonymous";
-                img.onload = () => resolve(img);
-                img.onerror = () => reject(new Error("Failed to load background image."));
-                img.src = mockupRoomImage;
-            });
-    
-            canvas.width = bgImage.naturalWidth;
-            canvas.height = bgImage.naturalHeight;
-    
-            ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
-            
-            // 2. Calculate scaling factor from display to natural size
-            const containerRect = mockupCanvasRef.current.getBoundingClientRect();
-            const containerRatio = containerRect.width / containerRect.height;
-            const bgRatio = bgImage.naturalWidth / bgImage.naturalHeight;
-    
-            let renderedBgWidth, renderedBgHeight, offsetX, offsetY;
-            if (containerRatio > bgRatio) { // height-limited
-                renderedBgHeight = containerRect.height;
-                renderedBgWidth = renderedBgHeight * bgRatio;
-                offsetX = (containerRect.width - renderedBgWidth) / 2;
-                offsetY = 0;
-            } else { // width-limited
-                renderedBgWidth = containerRect.width;
-                renderedBgHeight = renderedBgWidth / bgRatio;
-                offsetX = 0;
-                offsetY = (containerRect.height - renderedBgHeight) / 2;
-            }
-    
-            const scaleFactor = bgImage.naturalWidth / renderedBgWidth;
-    
-            // 3. Load all furniture item images
-            const sortedFurniture = [...mockupFurniture].sort((a, b) => a.zIndex - b.zIndex);
-            
-            const itemImages = await Promise.all(sortedFurniture.map(item =>
-                new Promise<HTMLImageElement>((resolve, reject) => {
-                    const img = new Image();
-                    img.crossOrigin = "anonymous";
-                    img.onload = () => resolve(img);
-                    img.onerror = () => reject(new Error(`Failed to load furniture image: ${item.id}`));
-                    img.src = item.src;
-                })
-            ));
-    
-            // 4. Draw each furniture item
-            sortedFurniture.forEach((item, index) => {
-                const itemImg = itemImages[index];
-                const itemWidth = item.width * item.scale * scaleFactor;
-                const itemHeight = item.height * item.scale * scaleFactor;
-    
-                const canvasX = (item.x - offsetX) * scaleFactor;
-                const canvasY = (item.y - offsetY) * scaleFactor;
-    
-                const centerX = canvasX + itemWidth / 2;
-                const centerY = canvasY + itemHeight / 2;
-    
-                ctx.save();
-                ctx.translate(centerX, centerY);
-                ctx.rotate(item.rotation * Math.PI / 180);
-                ctx.scale(item.flipHorizontal ? -1 : 1, item.flipVertical ? -1 : 1);
-                ctx.drawImage(itemImg, -itemWidth / 2, -itemHeight / 2, itemWidth, itemHeight);
-                ctx.restore();
-            });
-    
-            // 5. Trigger download
-            const dataUrl = canvas.toDataURL('image/png');
-            const link = document.createElement('a');
-            link.href = dataUrl;
-            link.download = `${(projectName || 'room-genius').replace(/\s+/g, '-').toLowerCase()}-mockup.png`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-    
-        } catch (error) {
-            console.error("Error downloading mockup:", error);
-            setErrorMessage(`Sorry, the image could not be downloaded. ${(error as Error).message}`);
-        } finally {
-            setIsDownloadingMockup(false);
-        }
+    const handleUsePalette = (palette: {id: number, colors: string}) => {
+        setColorPalette(palette.colors);
+        setIsPalettesViewOpen(false);
+        setStep(4);
     };
-
-    const handleMockupRoomUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (file) {
-            const dataUrl = await fileToDataUrl(file);
-            setMockupRoomImage(dataUrl);
-        }
-    };
-
-    const handleFurnitureLibraryUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const files = e.target.files;
-        if (files) {
-            const newItems = await Promise.all(
-                Array.from(files).map(async file => {
-                    const src = await fileToDataUrl(file);
-                    return { id: `lib_${Date.now()}_${Math.random()}`, src };
-                })
-            );
-            setFurnitureLibrary(prev => [...prev, ...newItems]);
-        }
-    };
-    
-    const initializeMockupCanvas = () => {
-        setMockupFurniture([]); // Start with an empty canvas
-        setMockupStep('canvas');
-    };
-
-    const handleLibraryItemDragStart = (e: React.DragEvent, libItem: { id: string; src: string }) => {
-        e.dataTransfer.setData('application/json', JSON.stringify(libItem));
-    };
-
-    const handleDragOver = (e: React.DragEvent) => {
-        e.preventDefault();
-    };
-
-    const handleDrop = async (e: React.DragEvent) => {
-        e.preventDefault();
-        if (!mockupCanvasRef.current) return;
-
-        const libItemJSON = e.dataTransfer.getData('application/json');
-        if (!libItemJSON) return;
-
-        const libItem = JSON.parse(libItemJSON);
-        if (!libItem || !libItem.src) return;
-
-        const canvasRect = mockupCanvasRef.current.getBoundingClientRect();
-
-        const defaultWidth = 150; 
-        const defaultHeight = 150;
-
-        const newItem: MockupFurnitureItem = {
-            id: `item_${Date.now()}_${Math.random()}`,
-            src: libItem.src,
-            x: e.clientX - canvasRect.left - (defaultWidth / 2),
-            y: e.clientY - canvasRect.top - (defaultHeight / 2),
-            width: defaultWidth,
-            height: defaultHeight,
-            scale: 1,
-            rotation: 0,
-            zIndex: Math.max(...mockupFurniture.map(f => f.zIndex), 0) + 1,
-            isLoading: true, // Set loading state immediately
-            flipHorizontal: false,
-            flipVertical: false,
-        };
-
-        setMockupFurniture(prev => [...prev, newItem]);
-
-        try {
-            const newSrc = await removeImageBackground(newItem.src);
-            setMockupFurniture(prev => prev.map(i => 
-                i.id === newItem.id ? { ...i, src: newSrc, isLoading: false } : i
-            ));
-        } catch (error) {
-            console.error("Failed to remove background on drop:", error);
-            setErrorMessage("Could not automatically remove background. You can try again manually.");
-            setMockupFurniture(prev => prev.map(i => 
-                i.id === newItem.id ? { ...i, isLoading: false } : i
-            ));
-        }
-    };
-
-    const getEventCoords = (e: React.MouseEvent | React.TouchEvent) => {
-        if ('touches' in e && e.touches.length > 0) {
-            return { x: e.touches[0].clientX, y: e.touches[0].clientY };
-        }
-        return { x: (e as React.MouseEvent).clientX, y: (e as React.MouseEvent).clientY };
-    };
-
-    const handleItemInteractionStart = (e: React.MouseEvent | React.TouchEvent, itemId: string, action: 'move' | 'resize' | 'rotate') => {
-        e.stopPropagation();
-        const currentItem = mockupFurniture.find(item => item.id === itemId);
-        if (!currentItem) return;
-
-        setSelectedItemId(itemId);
-        const { x, y } = getEventCoords(e);
-        setActionState({ action, initialX: x, initialY: y, initialItemState: { ...currentItem } });
-
-        if(action === 'move') {
-            const maxZ = Math.max(...mockupFurniture.map(f => f.zIndex), 0);
-            setMockupFurniture(mf => mf.map(f => f.id === itemId ? {...f, zIndex: maxZ + 1} : f));
-        }
-    };
-
-    const handleInteractionMove = useCallback((e: MouseEvent | TouchEvent) => {
-        if (!actionState.action || !actionState.initialItemState || !mockupCanvasRef.current) return;
-        e.preventDefault();
-
-        const { x: currentX, y: currentY } = getEventCoords(e as any);
-        const deltaX = currentX - actionState.initialX;
-        const deltaY = currentY - actionState.initialY;
-
-        setMockupFurniture(prev => {
-            const newFurniture = prev.map(item => {
-                if (item.id !== actionState.initialItemState!.id) return item;
-
-                let updatedItem = { ...item };
-                
-                // 1. Apply default transformation
-                if (actionState.action === 'move') {
-                    updatedItem.x = actionState.initialItemState!.x + deltaX;
-                    updatedItem.y = actionState.initialItemState!.y + deltaY;
-                } else if (actionState.action === 'resize') {
-                     const originalDist = Math.sqrt(Math.pow(actionState.initialItemState!.width, 2) + Math.pow(actionState.initialItemState!.height, 2));
-                     const newDist = Math.sqrt(Math.pow(actionState.initialItemState!.width + deltaX, 2) + Math.pow(actionState.initialItemState!.height + deltaY, 2));
-                     updatedItem.scale = actionState.initialItemState!.scale * (newDist/originalDist);
-                } else if (actionState.action === 'rotate') {
-                    const itemCenterX = item.x + (item.width * item.scale) / 2;
-                    const itemCenterY = item.y + (item.height * item.scale) / 2;
-                    const angle1 = Math.atan2(actionState.initialY - itemCenterY, actionState.initialX - itemCenterX);
-                    const angle2 = Math.atan2(currentY - itemCenterY, currentX - itemCenterX);
-                    updatedItem.rotation = actionState.initialItemState!.rotation + (angle2 - angle1) * (180 / Math.PI);
-                }
-                
-                return updatedItem;
-            });
-            
-            // 2. Apply snapping for 'move' action
-            const newSnapLines: SnapLine[] = [];
-            const movingItemIndex = newFurniture.findIndex(item => item.id === actionState.initialItemState!.id);
-            if (actionState.action === 'move' && movingItemIndex !== -1) {
-                const movingItem = newFurniture[movingItemIndex];
-                const snapThreshold = 10;
-                
-                const movingItemWidth = movingItem.width * movingItem.scale;
-                const movingItemHeight = movingItem.height * movingItem.scale;
-                
-                const movingBounds = {
-                    left: movingItem.x,
-                    right: movingItem.x + movingItemWidth,
-                    top: movingItem.y,
-                    bottom: movingItem.y + movingItemHeight,
-                    centerX: movingItem.x + movingItemWidth / 2,
-                    centerY: movingItem.y + movingItemHeight / 2,
-                };
-
-                const canvasRect = mockupCanvasRef.current.getBoundingClientRect();
-                
-                const xTargets: {value: number, min: number, max: number}[] = [{value: canvasRect.width / 2, min: 0, max: canvasRect.height}];
-                const yTargets: {value: number, min: number, max: number}[] = [{value: canvasRect.height / 2, min: 0, max: canvasRect.width}];
-
-                newFurniture.forEach(item => {
-                    if (item.id === movingItem.id) return;
-                    const staticItemWidth = item.width * item.scale;
-                    const staticItemHeight = item.height * item.scale;
-                    
-                    xTargets.push(
-                        {value: item.x, min: Math.min(movingBounds.top, item.y), max: Math.max(movingBounds.bottom, item.y + staticItemHeight)},
-                        {value: item.x + staticItemWidth / 2, min: Math.min(movingBounds.top, item.y), max: Math.max(movingBounds.bottom, item.y + staticItemHeight)},
-                        {value: item.x + staticItemWidth, min: Math.min(movingBounds.top, item.y), max: Math.max(movingBounds.bottom, item.y + staticItemHeight)}
-                    );
-                    yTargets.push(
-                        {value: item.y, min: Math.min(movingBounds.left, item.x), max: Math.max(movingBounds.right, item.x + staticItemWidth)},
-                        {value: item.y + staticItemHeight / 2, min: Math.min(movingBounds.left, item.x), max: Math.max(movingBounds.right, item.x + staticItemWidth)},
-                        {value: item.y + staticItemHeight, min: Math.min(movingBounds.left, item.x), max: Math.max(movingBounds.right, item.x + staticItemWidth)}
-                    );
-                });
-                
-                for (const target of xTargets) {
-                    if (Math.abs(movingBounds.left - target.value) < snapThreshold) {
-                        newFurniture[movingItemIndex].x = target.value;
-                        newSnapLines.push({ x1: target.value, y1: target.min, x2: target.value, y2: target.max, key: `vx-${target.value}` });
-                        break;
-                    }
-                    if (Math.abs(movingBounds.right - target.value) < snapThreshold) {
-                        newFurniture[movingItemIndex].x = target.value - movingItemWidth;
-                        newSnapLines.push({ x1: target.value, y1: target.min, x2: target.value, y2: target.max, key: `vx-${target.value}` });
-                        break;
-                    }
-                    if (Math.abs(movingBounds.centerX - target.value) < snapThreshold) {
-                        newFurniture[movingItemIndex].x = target.value - movingItemWidth / 2;
-                        newSnapLines.push({ x1: target.value, y1: target.min, x2: target.value, y2: target.max, key: `vx-${target.value}` });
-                        break;
-                    }
-                }
-
-                const finalMovingBounds = {
-                    top: newFurniture[movingItemIndex].y,
-                    bottom: newFurniture[movingItemIndex].y + movingItemHeight,
-                    centerY: newFurniture[movingItemIndex].y + movingItemHeight / 2,
-                };
-                
-                for (const target of yTargets) {
-                     if (Math.abs(finalMovingBounds.top - target.value) < snapThreshold) {
-                        newFurniture[movingItemIndex].y = target.value;
-                        newSnapLines.push({ x1: target.min, y1: target.value, x2: target.max, y2: target.value, key: `hy-${target.value}` });
-                        break;
-                    }
-                    if (Math.abs(finalMovingBounds.bottom - target.value) < snapThreshold) {
-                        newFurniture[movingItemIndex].y = target.value - movingItemHeight;
-                        newSnapLines.push({ x1: target.min, y1: target.value, x2: target.max, y2: target.value, key: `hy-${target.value}` });
-                        break;
-                    }
-                    if (Math.abs(finalMovingBounds.centerY - target.value) < snapThreshold) {
-                        newFurniture[movingItemIndex].y = target.value - movingItemHeight / 2;
-                        newSnapLines.push({ x1: target.min, y1: target.value, x2: target.max, y2: target.value, key: `hy-${target.value}` });
-                        break;
-                    }
-                }
-            }
-            
-            setSnapLines(newSnapLines);
-            return newFurniture;
-        });
-
-    }, [actionState]);
-
-    const handleInteractionEnd = useCallback(() => {
-        setActionState({ action: null, initialX: 0, initialY: 0 });
-        setSnapLines([]);
-    }, []);
-
-    useEffect(() => {
-        window.addEventListener('mousemove', handleInteractionMove);
-        window.addEventListener('touchmove', handleInteractionMove, { passive: false });
-        window.addEventListener('mouseup', handleInteractionEnd);
-        window.addEventListener('touchend', handleInteractionEnd);
-
-        return () => {
-            window.removeEventListener('mousemove', handleInteractionMove);
-            window.removeEventListener('touchmove', handleInteractionMove);
-            window.removeEventListener('mouseup', handleInteractionEnd);
-            window.removeEventListener('touchend', handleInteractionEnd);
-        };
-    }, [handleInteractionMove, handleInteractionEnd]);
-
-    const handleDeleteItem = (itemId: string) => {
-        setMockupFurniture(prev => prev.filter(item => item.id !== itemId));
-        if (selectedItemId === itemId) {
-            setSelectedItemId(null);
-        }
-    };
-    
-    const handleRemoveBackground = async (itemId: string) => {
-        const item = mockupFurniture.find(i => i.id === itemId);
-        if (!item || item.isLoading) return;
-
-        setMockupFurniture(prev => prev.map(i => i.id === itemId ? { ...i, isLoading: true } : i));
-
-        try {
-            const newSrc = await removeImageBackground(item.src);
-            setMockupFurniture(prev => prev.map(i => i.id === itemId ? { ...i, src: newSrc, isLoading: false } : i));
-        } catch (error) {
-            console.error("Failed to remove background:", error);
-            setErrorMessage("Could not remove background. Please try again.");
-            setMockupFurniture(prev => prev.map(i => i.id === itemId ? { ...i, isLoading: false } : i));
-        }
-    };
-
-    const handleFlip = (itemId: string, direction: 'horizontal' | 'vertical') => {
-        setMockupFurniture(prev => prev.map(item => {
-            if (item.id === itemId) {
-                if (direction === 'horizontal') {
-                    return { ...item, flipHorizontal: !item.flipHorizontal };
-                } else { // vertical
-                    return { ...item, flipVertical: !item.flipVertical };
-                }
-            }
-            return item;
-        }));
-    };
-
-    // --- END MOCKUP TOOL ---
 
     const renderHeader = (title: string, subtitle: string) => (
         <div className="text-center p-4 mb-4">
@@ -959,11 +482,6 @@ const App: React.FC = () => {
                         <span className="mt-2 font-semibold text-slate-800">{room.name}</span>
                     </button>
                 ))}
-                <button onClick={() => { setMockupStep('setup'); setCurrentView('mockup'); }} className="col-span-2 flex flex-col items-center justify-center p-4 bg-slate-800 text-white rounded-xl border border-slate-700 shadow-sm hover:shadow-md hover:bg-slate-700 transition-all duration-200">
-                    <MockupIcon />
-                    <span className="mt-2 font-semibold">Create a Mock Up</span>
-                    <p className="text-xs text-slate-300 mt-1">Manually place furniture in your room</p>
-                </button>
             </div>
         </div>
     );
@@ -1160,6 +678,11 @@ const App: React.FC = () => {
                     <label className="font-semibold text-slate-700">Color Palette</label>
                     <div className="flex items-center space-x-2 mt-2">
                         <input type="text" value={colorPalette} onChange={e => setColorPalette(e.target.value)} placeholder="e.g. Beige, Sage Green, Gold" className="w-full p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500" />
+                        <button onClick={handleSavePalette} disabled={!colorPalette.trim()} className="p-2 bg-stone-100 text-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed border border-stone-200" aria-label="Save Palette">
+                           <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                             <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v12l-5-3.09L5 16V4z" />
+                           </svg>
+                        </button>
                         <button onClick={handleRecommendColor} disabled={designStyles.length === 0 || isRecommendingColor} className="p-2 bg-stone-100 text-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed border border-stone-200">
                             {isRecommendingColor ? <div className="w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full animate-spin"></div> : 'AI ✨'}
                         </button>
@@ -1269,17 +792,14 @@ const App: React.FC = () => {
                                 </div>
                                 {(index === 0 || unlockedDesigns) && (
                                     <div className="p-3 grid grid-cols-2 gap-2">
-                                         <button onClick={() => handleSaveDesign(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
-                                            Save Design
+                                        <button onClick={() => handleShareDesign(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
+                                            Save to Device
                                         </button>
                                         <button onClick={() => setArImageSrc(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
                                             View in AR
                                         </button>
-                                        <button onClick={() => handleShopThisLook(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
+                                        <button onClick={() => handleShopThisLook(imgSrc)} className="col-span-2 w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
                                             Shop this Look
-                                        </button>
-                                        <button onClick={() => handleOpenRecolorModal(imgSrc, index)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
-                                            Recolor Walls
                                         </button>
                                     </div>
                                 )}
@@ -1418,7 +938,7 @@ const App: React.FC = () => {
             />
             <div className="absolute top-4 right-4 z-10">
               <button onClick={() => setArImageSrc(null)} className="bg-white/50 backdrop-blur-sm text-black rounded-full p-3 shadow-lg hover:bg-white/80 transition" aria-label="Close AR View">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 20 20" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
@@ -1449,7 +969,7 @@ const App: React.FC = () => {
                         <p className="text-sm text-slate-600 truncate">{selectedItemForSimilar?.name}</p>
                     </div>
                     <button onClick={() => setSelectedItemForSimilar(null)} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 20 20" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                         </svg>
                     </button>
@@ -1457,7 +977,7 @@ const App: React.FC = () => {
                 <div className="flex-grow overflow-y-auto p-4">
                     {isFindingSimilar ? (
                         <div className="flex flex-col items-center justify-center text-center p-8 h-full">
-                            <svg className="animate-spin h-10 w-10 text-slate-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="http://www.w3.org/2000/svg">
+                            <svg className="animate-spin h-10 w-10 text-slate-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
@@ -1473,7 +993,7 @@ const App: React.FC = () => {
                                         <img src={item.thumbnailUrl} alt={item.name} className="w-20 h-20 object-cover rounded-md border flex-shrink-0 bg-white" />
                                     ) : (
                                         <div className="w-20 h-20 bg-stone-100 rounded-md border flex-shrink-0 flex items-center justify-center">
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-stone-400" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor">
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-stone-400" fill="none" viewBox="0 0 20 20" stroke="currentColor">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                                             </svg>
                                         </div>
@@ -1501,7 +1021,7 @@ const App: React.FC = () => {
                 <header className="p-4 border-b border-stone-200 flex justify-between items-center">
                     <h2 className="text-xl font-serif font-bold text-slate-800">Unlock All Designs</h2>
                      <button onClick={() => setIsSubscriptionModalOpen(false)} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 20 20" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                 </header>
                 <div className="p-4 space-y-4">
@@ -1549,317 +1069,73 @@ const App: React.FC = () => {
                             <h2 className="text-lg font-serif font-bold text-slate-800">Project: {projectName}</h2>
                         </div>
                         <button onClick={() => setIsDashboardOpen(false)} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 20 20" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                             </svg>
                         </button>
                     </header>
-                    <div className="flex-grow overflow-y-auto p-4 space-y-3">
-                        {dashboardItems.map(item => (
-                            <div key={item.name} className="bg-stone-50 p-3 rounded-lg border border-stone-200 flex justify-between items-center">
-                                <span className="font-semibold text-slate-700">{item.name}</span>
-                                <span className={`text-sm ${item.value === "Not defined yet" || item.value === "Coming Soon" ? "text-slate-400" : "text-slate-600 font-medium"}`}>{item.value}</span>
-                            </div>
-                        ))}
+                    <div className="flex-grow overflow-y-auto p-4">
+                        <div className="space-y-3">
+                            {dashboardItems.map(item => (
+                                <div key={item.name} className="bg-stone-50 p-3 rounded-lg border border-stone-200 flex justify-between items-center">
+                                    <span className="font-semibold text-slate-700">{item.name}</span>
+                                    <span className={`text-sm ${item.value === "Not defined yet" || item.value === "Coming Soon" ? "text-slate-400" : "text-slate-600 font-medium"}`}>{item.value}</span>
+                                </div>
+                            ))}
+                        </div>
+                         <button
+                            onClick={() => {
+                                setIsDashboardOpen(false);
+                                setIsPalettesViewOpen(true);
+                            }}
+                            className="w-full mt-4 text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200"
+                        >
+                            My Palettes
+                        </button>
                     </div>
                 </div>
             </div>
         );
     };
 
-    const renderRecolorModal = () => (
-        <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
+    const renderPalettesView = () => (
+         <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
                 <header className="p-4 border-b border-stone-200 flex justify-between items-center flex-shrink-0">
-                    <h2 className="text-lg font-serif font-bold text-slate-800">Change Wall Color</h2>
-                    <button onClick={handleCloseRecolorModal} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    <h2 className="text-lg font-serif font-bold text-slate-800">My Color Palettes</h2>
+                    <button onClick={() => setIsPalettesViewOpen(false)} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 20 20" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                 </header>
-                <div className="flex-grow overflow-y-auto p-4 space-y-4">
-                    <div className="relative">
-                        {imageToRecolor && (
-                            <img src={`data:image/png;base64,${imageToRecolor.src}`} alt="Room design to recolor" className="rounded-lg shadow-sm w-full h-auto" />
-                        )}
-                        <div
-                            className="absolute inset-0 rounded-lg mix-blend-soft-light pointer-events-none transition-colors duration-100"
-                            style={{ backgroundColor: previewWallColor || 'transparent' }}
-                        ></div>
-                    </div>
-                    <div>
-                        <label htmlFor="wall-color-input" className="font-semibold text-slate-700 text-sm">New Wall Color</label>
-                        <div className="flex items-center space-x-2 mt-1">
-                            <input
-                                id="wall-color-input"
-                                type="text"
-                                value={newWallColor}
-                                onChange={e => {
-                                    const value = e.target.value;
-                                    setNewWallColor(value);
-                                    if (/^#([0-9A-F]{3}){1,2}$/i.test(value)) {
-                                        setPreviewWallColor(value);
-                                    } else {
-                                        setPreviewWallColor('');
-                                    }
-                                }}
-                                placeholder="e.g., #B2AC88 or Sage Green"
-                                className="flex-grow p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500"
-                            />
-                            <div className="relative w-10 h-10 flex-shrink-0">
-                                <input
-                                    type="color"
-                                    id="color-picker"
-                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                    value={previewWallColor && /^#[0-9A-F]{6}$/i.test(previewWallColor) ? previewWallColor : '#ffffff'}
-                                    onInput={e => {
-                                        const hex = e.currentTarget.value;
-                                        setNewWallColor(hex);
-                                        setPreviewWallColor(hex);
-                                    }}
-                                    aria-label="Select wall color with a color picker"
-                                />
-                                <label
-                                    htmlFor="color-picker"
-                                    className="block w-full h-full rounded-lg border border-slate-600 cursor-pointer"
-                                    style={{ backgroundColor: previewWallColor && /^#[0-9A-F]{6}$/i.test(previewWallColor) ? previewWallColor : '#cccccc' }}
-                                >
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-                    <div>
-                        <p className="font-semibold text-slate-700 text-sm mb-2">Or pick a preset:</p>
-                        <div className="flex flex-wrap gap-2">
-                            {PRESET_COLORS.map(color => (
-                                <button key={color.name} onClick={() => {
-                                        setNewWallColor(color.name);
-                                        setPreviewWallColor(color.hex);
-                                    }} className="flex items-center space-x-2 p-2 rounded-lg text-sm transition border hover:border-slate-500 bg-white text-slate-700 border-stone-300">
-                                    <span className="block w-4 h-4 rounded-full border border-stone-300" style={{ backgroundColor: color.hex }}></span>
-                                    <span>{color.name}</span>
-                                </button>
+                <div className="flex-grow overflow-y-auto p-4">
+                    {savedPalettes.length > 0 ? (
+                        <div className="space-y-3">
+                            {savedPalettes.map(palette => (
+                                <div key={palette.id} className="bg-stone-50 p-3 rounded-lg border border-stone-200">
+                                    <div className="flex items-center space-x-2 mb-2">
+                                        {palette.colors.split(',').map(color => color.trim()).map((color, index) => (
+                                            <div key={index} className="h-6 w-6 rounded-full border border-stone-300" style={{ backgroundColor: color }} title={color}></div>
+                                        ))}
+                                    </div>
+                                    <p className="text-sm text-slate-700 font-medium mb-3">{palette.colors}</p>
+                                    <div className="flex items-center justify-between">
+                                        <button onClick={() => handleUsePalette(palette)} className="py-1 px-3 text-sm font-semibold bg-slate-800 text-white rounded-md hover:bg-slate-700 transition">
+                                            Use This Palette
+                                        </button>
+                                        <button onClick={() => handleDeletePalette(palette.id)} className="text-red-500 hover:text-red-700 p-1" aria-label="Delete Palette">
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>
+                                        </button>
+                                    </div>
+                                </div>
                             ))}
                         </div>
-                    </div>
-                    <p className="text-xs text-slate-500 text-center mt-2 p-2 bg-stone-100 rounded-md">
-                        Note: The live preview tints the whole image for a general feel. The final version will intelligently apply color <strong>only to the walls</strong>.
-                    </p>
-                    {recolorError && (
-                        <p className="text-red-500 text-sm text-center bg-red-50 p-2 rounded-md">{recolorError}</p>
+                    ) : (
+                        <p className="text-slate-600 text-center p-4 bg-stone-100 rounded-lg">No palettes saved yet. Save a palette from the Design Details screen to see it here.</p>
                     )}
                 </div>
-                <footer className="p-4 border-t border-stone-200 flex-shrink-0">
-                    <button
-                        onClick={handleRecolorSubmit}
-                        disabled={!newWallColor.trim() || isRecoloring}
-                        className="w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center justify-center"
-                    >
-                        {isRecoloring ? (
-                            <>
-                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                                Applying...
-                            </>
-                        ) : 'Apply Changes'}
-                    </button>
-                </footer>
             </div>
         </div>
     );
-    
-    const renderMockupTool = () => {
-        if (mockupStep === 'setup') {
-            return (
-                <div className="p-4 flex flex-col items-center flex-grow">
-                    {renderHeader("Create Your Mock Up", "Upload a room photo and add your items.")}
-                    <div className="w-full max-w-sm space-y-6">
-                        {hasSavedMockup && (
-                            <div className="w-full">
-                                <button 
-                                    onClick={handleLoadMockup}
-                                    className="w-full bg-slate-600 text-white py-3 rounded-lg font-semibold hover:bg-slate-500 transition"
-                                >
-                                    Load Saved Project
-                                </button>
-                                <div className="text-center text-slate-500 my-3 text-sm font-semibold">OR</div>
-                            </div>
-                        )}
-                        <div>
-                            <label className="font-semibold text-slate-700">1. Your Room Photo</label>
-                            {mockupRoomImage ? (
-                                <div className="mt-2 relative">
-                                    <img src={mockupRoomImage} alt="Room preview" className="w-full rounded-lg shadow-md"/>
-                                    <button onClick={() => setMockupRoomImage(null)} className="absolute top-2 right-2 bg-black/50 text-white rounded-full p-1.5">&times;</button>
-                                </div>
-                            ) : (
-                                <label htmlFor="mockup-room-upload" className="mt-2 flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-stone-300 rounded-lg cursor-pointer hover:bg-stone-100">
-                                    <span className="text-slate-500 font-semibold">Upload Room Photo</span>
-                                </label>
-                            )}
-                            <input id="mockup-room-upload" type="file" className="hidden" accept="image/*" onChange={handleMockupRoomUpload} />
-                        </div>
-
-                        <div>
-                            <label className="font-semibold text-slate-700">2. Add Furniture & Decor</label>
-                            <div className="grid grid-cols-4 gap-2 mt-2">
-                                {furnitureLibrary.map(item => (
-                                    <div key={item.id} className="relative aspect-square">
-                                        <img src={item.src} alt="furniture item" className="w-full h-full object-cover rounded-md bg-stone-100 border"/>
-                                        <button onClick={() => setFurnitureLibrary(lib => lib.filter(i => i.id !== item.id))} className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-bold">&times;</button>
-                                    </div>
-                                ))}
-                                <label htmlFor="furniture-upload" className="flex flex-col items-center justify-center p-1 bg-stone-50 border-2 border-dashed border-stone-300 rounded-md cursor-pointer hover:bg-stone-100 aspect-square">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>
-                                    <span className="text-xs text-stone-500 mt-1 text-center">Add Item</span>
-                                </label>
-                                <input id="furniture-upload" type="file" className="hidden" accept="image/png, image/jpeg, image/webp" onChange={handleFurnitureLibraryUpload} multiple />
-                            </div>
-                        </div>
-
-                        <button 
-                            onClick={initializeMockupCanvas}
-                            disabled={!mockupRoomImage}
-                            className="w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed"
-                        >
-                            Start Designing
-                        </button>
-                    </div>
-                </div>
-            );
-        }
-
-        // Canvas view
-        return (
-             <div className="flex flex-col h-full bg-stone-100">
-                <header className="flex items-center justify-between p-2 border-b border-stone-200 bg-white flex-shrink-0">
-                    <button onClick={() => setMockupStep('setup')} className="p-2 rounded-md hover:bg-stone-200 text-sm font-semibold">&larr; Back to Setup</button>
-                    <div className="flex items-center gap-2 sm:gap-4">
-                        <h2 className="font-semibold text-slate-700 hidden sm:block">Arrange Your Room</h2>
-                        <button 
-                            onClick={handleSaveMockup}
-                            className={`py-1 px-3 text-sm font-semibold rounded-md transition ${
-                                saveState === 'saved'
-                                ? 'bg-green-600 text-white cursor-default'
-                                : 'bg-slate-700 text-white hover:bg-slate-600'
-                            }`}
-                        >
-                            {saveState === 'saved' ? 'Saved!' : 'Save Project'}
-                        </button>
-                        <button
-                            onClick={handleDownloadMockup}
-                            disabled={isDownloadingMockup}
-                            className="py-1 px-3 text-sm font-semibold rounded-md transition bg-slate-800 text-white hover:bg-slate-700 disabled:bg-slate-500 disabled:cursor-wait"
-                        >
-                            {isDownloadingMockup ? 'Saving...' : 'Download'}
-                        </button>
-                    </div>
-                     <button onClick={handleExitMockup} className="p-2 rounded-md hover:bg-stone-200 text-sm font-semibold">Exit &rarr;</button>
-                </header>
-                <main className="flex-grow flex flex-col md:flex-row overflow-hidden">
-                    <div 
-                        ref={mockupCanvasRef} 
-                        className="relative flex-grow bg-stone-200 overflow-hidden" 
-                        onClick={() => setSelectedItemId(null)}
-                        onDragOver={handleDragOver}
-                        onDrop={handleDrop}
-                    >
-                        {mockupRoomImage && <img src={mockupRoomImage} className="w-full h-full object-contain pointer-events-none" alt="User's room" />}
-                        
-                        {snapLines.map(line => (
-                            <div
-                                key={line.key}
-                                className="absolute bg-red-500 pointer-events-none"
-                                style={{
-                                    left: Math.min(line.x1, line.x2),
-                                    top: Math.min(line.y1, line.y2),
-                                    width: line.y1 === line.y2 ? Math.abs(line.x1 - line.x2) : 1,
-                                    height: line.x1 === line.x2 ? Math.abs(line.y1 - line.y2) : 1,
-                                }}
-                            ></div>
-                        ))}
-
-                        {mockupFurniture.map(item => (
-                            <div
-                                key={item.id}
-                                className="absolute cursor-move group"
-                                style={{
-                                    left: item.x,
-                                    top: item.y,
-                                    width: item.width * item.scale,
-                                    height: item.height * item.scale,
-                                    transform: `rotate(${item.rotation}deg)`,
-                                    zIndex: item.zIndex,
-                                }}
-                                onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'move')}
-                                onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'move')}
-                            >
-                                <div style={{ 
-                                    width: '100%', 
-                                    height: '100%', 
-                                    transform: `scaleX(${item.flipHorizontal ? -1 : 1}) scaleY(${item.flipVertical ? -1 : 1})`
-                                }}>
-                                    <img src={item.src} className="w-full h-full pointer-events-none object-contain" alt="furniture item" />
-                                </div>
-
-                                {item.isLoading && (
-                                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                                        <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                                    </div>
-                                )}
-                                {selectedItemId === item.id && (
-                                    <>
-                                        <div className="absolute -inset-1 border-2 border-slate-600 border-dashed pointer-events-none"></div>
-                                        <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center space-x-1 p-1 bg-white rounded-full shadow-lg">
-                                             <button onClick={() => handleRemoveBackground(item.id)} disabled={item.isLoading} className="w-7 h-7 flex items-center justify-center bg-stone-100 hover:bg-stone-200 rounded-full text-slate-700 disabled:opacity-50" title="Cut Out / Remove Background">
-                                                <MagicWandIcon />
-                                            </button>
-                                            <button onClick={() => handleFlip(item.id, 'horizontal')} className="w-7 h-7 flex items-center justify-center bg-stone-100 hover:bg-stone-200 rounded-full text-slate-700" title="Flip Horizontal">
-                                                <FlipHorizontalIcon />
-                                            </button>
-                                            <button onClick={() => handleFlip(item.id, 'vertical')} className="w-7 h-7 flex items-center justify-center bg-stone-100 hover:bg-stone-200 rounded-full text-slate-700" title="Flip Vertical">
-                                                <FlipVerticalIcon />
-                                            </button>
-                                            <button onClick={() => handleDeleteItem(item.id)} className="w-7 h-7 flex items-center justify-center bg-red-100 hover:bg-red-200 rounded-full text-red-700" title="Delete Item">
-                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>
-                                            </button>
-                                        </div>
-                                        <div 
-                                            className="absolute -bottom-3 -right-3 w-6 h-6 bg-white border-2 border-slate-600 rounded-full cursor-nwse-resize"
-                                            onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'resize')}
-                                            onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'resize')}
-                                        ></div>
-                                        <div 
-                                            className="absolute -bottom-3 -left-3 w-6 h-6 bg-white border-2 border-slate-600 rounded-full cursor-grab"
-                                            onMouseDown={(e) => handleItemInteractionStart(e, item.id, 'rotate')}
-                                            onTouchStart={(e) => handleItemInteractionStart(e, item.id, 'rotate')}
-                                        ></div>
-                                    </>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                    <aside className="flex-shrink-0 bg-white border-t md:border-t-0 md:border-l border-stone-200 p-2 overflow-y-auto md:w-48">
-                        <h3 className="font-semibold text-slate-700 mb-2 text-center md:text-left">Your Items</h3>
-                        <div className="flex flex-row md:grid md:grid-cols-2 gap-2 overflow-x-auto md:overflow-x-visible pb-2">
-                            {furnitureLibrary.map(libItem => (
-                                <div 
-                                    key={libItem.id} 
-                                    draggable="true" 
-                                    onDragStart={(e) => handleLibraryItemDragStart(e, libItem)} 
-                                    className="cursor-grab aspect-square bg-stone-100 rounded-md border hover:border-slate-400 p-1 w-24 h-24 flex-shrink-0 md:w-auto md:h-auto"
-                                    title="Drag me to the canvas"
-                                >
-                                    <img src={libItem.src} className="w-full h-full object-contain pointer-events-none" alt="Library item"/>
-                                </div>
-                            ))}
-                        </div>
-                    </aside>
-                </main>
-            </div>
-        );
-    };
 
     const renderCurrentStep = () => {
         switch (step) {
@@ -1874,70 +1150,56 @@ const App: React.FC = () => {
         }
     };
     
-    const handleExitMockup = () => {
-        setCurrentView('wizard');
-        // Reset mockup state for a clean slate next time, but don't clear the saved project
-        setMockupRoomImage(null);
-        setFurnitureLibrary([]);
-        setMockupFurniture([]);
-        setSelectedItemId(null);
-        setMockupStep('setup');
-    }
-
     return (
         <div className="min-h-screen bg-stone-50 flex flex-col">
             {arImageSrc && renderARView()}
             {selectedItemForSimilar && renderSimilarItemsModal()}
             {isSubscriptionModalOpen && renderSubscriptionModal()}
             {isDashboardOpen && renderProjectDashboardModal()}
-            {isRecolorModalOpen && renderRecolorModal()}
+            {isPalettesViewOpen && renderPalettesView()}
 
-            {currentView === 'wizard' ? (
-                <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen || isRecolorModalOpen ? 'hidden' : ''}`}>
-                    <header className="flex items-center justify-between p-2 border-b border-stone-200">
-                        <div className="w-10 flex-shrink-0">
-                            {step > 1 && <button onClick={handlePrevStep} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>}
-                        </div>
-                        <div className="flex-grow text-center">
-                            {step > 1 && projectName ? (
-                                <div className="flex items-center justify-center">
-                                    <span className="font-semibold text-sm text-slate-700 truncate max-w-[120px]">{projectName}</span>
-                                    <button onClick={() => setIsDashboardOpen(true)} className="ml-2 p-1.5 rounded-full hover:bg-stone-200" aria-label="Open Project Dashboard">
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                                        </svg>
-                                    </button>
-                                </div>
-                            ) : (
+            <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen || isPalettesViewOpen ? 'hidden' : ''}`}>
+                <header className="flex items-center justify-between p-2 border-b border-stone-200">
+                    <div className="w-10 flex-shrink-0">
+                        {step > 1 && <button onClick={handlePrevStep} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>}
+                    </div>
+                    <div className="flex-grow text-center">
+                        {step > 1 && projectName ? (
+                            <div className="flex items-center justify-center">
+                                <span className="font-semibold text-sm text-slate-700 truncate max-w-[120px]">{projectName}</span>
+                                <button onClick={() => setIsDashboardOpen(true)} className="ml-2 p-1.5 rounded-full hover:bg-stone-200" aria-label="Open Project Dashboard">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                    </svg>
+                                </button>
+                            </div>
+                        ) : (
+                            <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
+                        )}
+                    </div>
+                    <div className="w-10 flex-shrink-0 flex items-center justify-center">
+                        {cartItems.length > 0 && (
+                            <div className="relative">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-600" fill="none" viewBox="0 0 20 20" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                                <span className="absolute -top-2 -right-2 bg-red-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center border-2 border-white">
+                                    {cartItems.length}
+                                </span>
+                            </div>
+                        )}
+                    </div>
+                </header>
+                <main className="flex-grow flex flex-col overflow-y-auto bg-stone-50">
+                    <div className="flex-grow flex flex-col">
+                        {step > 1 && (
+                            <div className="flex-shrink-0">
                                 <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
-                            )}
-                        </div>
-                        <div className="w-10 flex-shrink-0 flex items-center justify-center">
-                            {cartItems.length > 0 && (
-                                <div className="relative">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-600" fill="none" viewBox="http://www.w3.org/2000/svg" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-                                    <span className="absolute -top-2 -right-2 bg-red-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center border-2 border-white">
-                                        {cartItems.length}
-                                    </span>
-                                </div>
-                            )}
-                        </div>
-                    </header>
-                    <main className="flex-grow flex flex-col overflow-y-auto bg-stone-50">
-                        <div className="flex-grow flex flex-col">
-                            {step > 1 && (
-                                <div className="flex-shrink-0">
-                                    <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
-                                </div>
-                            )}
-                            {/* FIX: Replaced malformed text with a call to render the current step's content. */}
-                            {renderCurrentStep()}
-                        </div>
-                    </main>
-                </div>
-            ) : (
-                renderMockupTool()
-            )}
+                            </div>
+                        )}
+                        {/* FIX: Replaced malformed text with a call to render the current step's content. */}
+                        {renderCurrentStep()}
+                    </div>
+                </main>
+            </div>
         </div>
     );
 };

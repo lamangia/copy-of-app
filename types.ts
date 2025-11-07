@@ -63,18 +63,3 @@ export interface FurnitureItem {
     thumbnail?: string;
     thumbnailUrl?: string;
 }
-
-export interface MockupFurnitureItem {
-  id: string;
-  src: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  scale: number;
-  rotation: number;
-  zIndex: number;
-  isLoading?: boolean;
-  flipHorizontal?: boolean;
-  flipVertical?: boolean;
-}
