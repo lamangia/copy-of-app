@@ -26,6 +26,12 @@ export const DESIGN_STYLES: Style[] = [
   { id: 'ultra-modern', name: 'Ultra Modern' },
   { id: 'maximalist', name: 'Maximalist' },
   { id: 'architectural', name: 'Architectural' },
+  { id: 'art-deco', name: 'Art Deco' },
+  { id: 'rustic', name: 'Rustic' },
+  { id: 'cottage', name: 'Cottage' },
+  { id: 'scandinavian', name: 'Scandinavian' },
+  { id: 'dark-academia', name: 'Dark Academia' },
+  { id: 'industrial', name: 'Industrial' },
 ];
 
 export const TIERS: Tier[] = [

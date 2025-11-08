@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture } from './services/geminiService';
 import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS } from './constants';
-import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store } from './types';
+import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store, SavedProject } from './types';
 import StepIndicator from './components/StepIndicator';
 import Loader from './components/Loader';
 
@@ -49,6 +49,11 @@ const App: React.FC = () => {
     // State for new Palettes feature
     const [savedPalettes, setSavedPalettes] = useState<{id: number, colors: string}[]>([]);
     const [isPalettesViewOpen, setIsPalettesViewOpen] = useState<boolean>(false);
+    
+    // State for Saved Designs folder
+    const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
+    const [isSavedDesignsViewOpen, setIsSavedDesignsViewOpen] = useState<boolean>(false);
+    const [selectedSavedProject, setSelectedSavedProject] = useState<SavedProject | null>(null);
 
     // State for Step 5: Shopping
     const [selectedImageForShopping, setSelectedImageForShopping] = useState<string | null>(null);
@@ -308,6 +313,14 @@ const App: React.FC = () => {
             const furniture = await identifyAndFindFurniture(imageSrc, roomType.name, styleNames, storeNames);
             const furnitureWithThumbnails = await createThumbnails(imageSrc, furniture);
             setIdentifiedFurniture(furnitureWithThumbnails);
+
+            // Update saved project if it exists
+            const projectIndex = savedProjects.findIndex(p => p.image === imageSrc);
+            if (projectIndex !== -1) {
+                const updatedProjects = [...savedProjects];
+                updatedProjects[projectIndex] = { ...updatedProjects[projectIndex], furniture: furnitureWithThumbnails };
+                setSavedProjects(updatedProjects);
+            }
         } catch (error)
  {
             setErrorMessage("Could not identify furniture in this image. Please try another one.");
@@ -441,6 +454,49 @@ const App: React.FC = () => {
         setColorPalette(palette.colors);
         setIsPalettesViewOpen(false);
         setStep(4);
+    };
+    
+    const handleSaveToFolder = (imageSrc: string) => {
+        if (!roomType || !projectName) return;
+        if (savedProjects.some(p => p.image === imageSrc)) return;
+
+        const newProject: SavedProject = {
+            id: `proj_${Date.now()}`,
+            image: imageSrc,
+            projectName: projectName,
+            roomTypeName: roomType.name,
+            styleNames: designStyles.map(s => s.name),
+            storeNames: selectedStores.map(s => s.name),
+        };
+        setSavedProjects(prev => [...prev, newProject]);
+    };
+    
+    const handleSelectSavedProject = (project: SavedProject) => {
+        setSelectedSavedProject(project);
+        setIdentifiedFurniture(project.furniture || []);
+        setErrorMessage(null); // Clear previous errors
+    };
+    
+    const handleShopThisLookForSavedProject = async (project: SavedProject) => {
+        if (!project) return;
+        
+        setIsIdentifyingFurniture(true);
+        setIdentifiedFurniture([]);
+        setErrorMessage(null);
+    
+        try {
+            const furniture = await identifyAndFindFurniture(project.image, project.roomTypeName, project.styleNames, project.storeNames);
+            const furnitureWithThumbnails = await createThumbnails(project.image, furniture);
+            
+            const updatedProject = { ...project, furniture: furnitureWithThumbnails };
+            setSavedProjects(projects => projects.map(p => p.id === updatedProject.id ? updatedProject : p));
+            setSelectedSavedProject(updatedProject);
+            setIdentifiedFurniture(furnitureWithThumbnails);
+        } catch (error) {
+            setErrorMessage("Could not identify furniture for this saved design.");
+        } finally {
+            setIsIdentifyingFurniture(false);
+        }
     };
 
     const renderHeader = (title: string, subtitle: string) => (
@@ -795,10 +851,16 @@ const App: React.FC = () => {
                                         <button onClick={() => handleShareDesign(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
                                             Save to Device
                                         </button>
+                                        <button 
+                                            onClick={() => handleSaveToFolder(imgSrc)}
+                                            disabled={savedProjects.some(p => p.image === imgSrc)}
+                                            className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200 disabled:bg-stone-200 disabled:text-stone-500 disabled:cursor-not-allowed">
+                                            {savedProjects.some(p => p.image === imgSrc) ? 'Saved ✓' : 'Save to Folder'}
+                                        </button>
                                         <button onClick={() => setArImageSrc(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
                                             View in AR
                                         </button>
-                                        <button onClick={() => handleShopThisLook(imgSrc)} className="col-span-2 w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
+                                        <button onClick={() => handleShopThisLook(imgSrc)} className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200">
                                             Shop this Look
                                         </button>
                                     </div>
@@ -1055,8 +1117,7 @@ const App: React.FC = () => {
         const dashboardItems = [
             { name: "Floorplan", value: floorplanDetails },
             { name: "Palette", value: colorPalette || "Not defined yet" },
-            { name: "Mood Board", value: "Coming Soon" },
-            { name: "Furniture", value: `${identifiedFurniture.length} items found` },
+            { name: "Saved Designs", value: `${savedProjects.length} saved` },
             { name: "Saved Items", value: `${savedItems.length} items saved` },
             { name: "Image Library", value: `${generatedImages.length} images generated` },
         ];
@@ -1086,9 +1147,18 @@ const App: React.FC = () => {
                          <button
                             onClick={() => {
                                 setIsDashboardOpen(false);
-                                setIsPalettesViewOpen(true);
+                                setIsSavedDesignsViewOpen(true);
                             }}
                             className="w-full mt-4 text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200"
+                        >
+                            My Saved Designs
+                        </button>
+                         <button
+                            onClick={() => {
+                                setIsDashboardOpen(false);
+                                setIsPalettesViewOpen(true);
+                            }}
+                            className="w-full mt-2 text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200"
                         >
                             My Palettes
                         </button>
@@ -1136,6 +1206,113 @@ const App: React.FC = () => {
             </div>
         </div>
     );
+    
+    const renderSavedDesignsView = () => (
+         <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
+                <header className="p-4 border-b border-stone-200 flex justify-between items-center flex-shrink-0">
+                    <h2 className="text-lg font-serif font-bold text-slate-800">My Saved Designs</h2>
+                    <button onClick={() => setIsSavedDesignsViewOpen(false)} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 20 20" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                </header>
+                <div className="flex-grow overflow-y-auto p-4">
+                    {savedProjects.length > 0 ? (
+                        <div className="grid grid-cols-2 gap-4">
+                            {savedProjects.map(project => (
+                                <div key={project.id} className="cursor-pointer group" onClick={() => handleSelectSavedProject(project)}>
+                                    <img src={`data:image/png;base64,${project.image}`} alt={project.projectName} className="w-full h-auto rounded-lg shadow-md group-hover:opacity-80 transition-opacity" />
+                                    <p className="text-sm font-semibold text-slate-700 mt-2 truncate">{project.projectName}</p>
+                                    <p className="text-xs text-slate-500">{project.roomTypeName}</p>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p className="text-slate-600 text-center p-4 bg-stone-100 rounded-lg">No designs saved yet. Use the 'Save to Folder' button on your results to save them here.</p>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+
+    const renderSavedProjectDetailView = () => {
+        if (!selectedSavedProject) return null;
+
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
+                    <header className="p-4 border-b border-stone-200 flex justify-between items-center flex-shrink-0">
+                        <div>
+                            <h2 className="text-lg font-serif font-bold text-slate-800 truncate">{selectedSavedProject.projectName}</h2>
+                            <p className="text-sm text-slate-500">{selectedSavedProject.roomTypeName}</p>
+                        </div>
+                        <button onClick={() => setSelectedSavedProject(null)} className="p-2 rounded-full hover:bg-stone-200" aria-label="Close Detail View">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 20 20" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                    </header>
+                    <div className="flex-grow overflow-y-auto p-4 space-y-4">
+                        <div className="relative">
+                           <img src={`data:image/png;base64,${selectedSavedProject.image}`} alt={selectedSavedProject.projectName} className="w-full h-auto rounded-lg shadow-md" />
+                           {hoveredItem && hoveredItem.boundingBox && (
+                                <div
+                                    className="absolute border-4 border-slate-600 bg-slate-600/30 transition-all duration-200 pointer-events-none rounded-md"
+                                    style={{
+                                        left: `${hoveredItem.boundingBox.x_min * 100}%`,
+                                        top: `${hoveredItem.boundingBox.y_min * 100}%`,
+                                        width: `${(hoveredItem.boundingBox.x_max - hoveredItem.boundingBox.x_min) * 100}%`,
+                                        height: `${(hoveredItem.boundingBox.y_max - hoveredItem.boundingBox.y_min) * 100}%`,
+                                    }}
+                                />
+                            )}
+                        </div>
+                         <div>
+                            <h3 className="font-serif font-bold text-xl text-slate-800 mb-2">Shop The Look</h3>
+                            {isIdentifyingFurniture ? (
+                                <Loader />
+                            ) : identifiedFurniture.length > 0 ? (
+                                <div className="space-y-3">
+                                    {identifiedFurniture.map((item, index) => {
+                                        const itemThumbnail = item.thumbnail || item.thumbnailUrl;
+                                        return (
+                                            <div 
+                                                key={index}
+                                                className="bg-stone-50 p-3 rounded-xl border border-stone-200"
+                                                onMouseEnter={() => setHoveredItem(item)}
+                                                onMouseLeave={() => setHoveredItem(null)}
+                                            >
+                                                <div className="flex items-start space-x-4">
+                                                     {itemThumbnail ? (
+                                                        <img src={itemThumbnail} alt={item.name} className="w-20 h-20 object-cover rounded-md border flex-shrink-0 bg-stone-100" />
+                                                    ) : (
+                                                        <div className="w-20 h-20 bg-stone-100 rounded-md border flex-shrink-0 flex items-center justify-center">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                                        </div>
+                                                    )}
+                                                    <div className="flex-grow">
+                                                        <h4 className="font-bold text-slate-900 text-sm">{item.name}</h4>
+                                                        <p className="text-xs text-slate-500">{item.store} - <span className="font-medium">{item.price}</span></p>
+                                                        <p className="text-xs text-slate-600 mt-1">{item.description}</p>
+                                                        <a href={item.purchaseUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-slate-600 hover:underline mt-2 inline-block">View Product &rarr;</a>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <>
+                                    <button onClick={() => handleShopThisLookForSavedProject(selectedSavedProject)} className="w-full bg-slate-800 text-white py-2 rounded-lg font-semibold hover:bg-slate-700 transition">
+                                        Find Furniture Items
+                                    </button>
+                                    {errorMessage && <p className="text-red-500 mt-2 text-center">{errorMessage}</p>}
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    };
 
     const renderCurrentStep = () => {
         switch (step) {
@@ -1157,8 +1334,11 @@ const App: React.FC = () => {
             {isSubscriptionModalOpen && renderSubscriptionModal()}
             {isDashboardOpen && renderProjectDashboardModal()}
             {isPalettesViewOpen && renderPalettesView()}
+            {isSavedDesignsViewOpen && !selectedSavedProject && renderSavedDesignsView()}
+            {selectedSavedProject && renderSavedProjectDetailView()}
 
-            <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen || isPalettesViewOpen ? 'hidden' : ''}`}>
+
+            <div className={`w-full max-w-md mx-auto bg-white shadow-2xl shadow-slate-200 flex flex-col flex-grow ${arImageSrc || selectedItemForSimilar || isSubscriptionModalOpen || isDashboardOpen || isPalettesViewOpen || isSavedDesignsViewOpen || selectedSavedProject ? 'hidden' : ''}`}>
                 <header className="flex items-center justify-between p-2 border-b border-stone-200">
                     <div className="w-10 flex-shrink-0">
                         {step > 1 && <button onClick={handlePrevStep} className="p-2 rounded-full hover:bg-stone-200 w-10 h-10 flex items-center justify-center text-xl">&larr;</button>}

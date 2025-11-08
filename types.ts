@@ -63,3 +63,13 @@ export interface FurnitureItem {
     thumbnail?: string;
     thumbnailUrl?: string;
 }
+
+export interface SavedProject {
+  id: string;
+  image: string; // base64 string
+  projectName: string;
+  roomTypeName: string;
+  styleNames: string[];
+  storeNames: string[];
+  furniture?: FurnitureItem[];
+}
