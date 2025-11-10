@@ -31,6 +31,7 @@ const App: React.FC = () => {
     const [roomFacing, setRoomFacing] = useState<string>(ROOM_DIRECTIONS[0]);
     const [windowCount, setWindowCount] = useState<number>(2);
     const [colorPalette, setColorPalette] = useState<string>('');
+    const [designNotes, setDesignNotes] = useState<string>('');
     const [isRecommendingColor, setIsRecommendingColor] = useState<boolean>(false);
     const [designStyles, setDesignStyles] =useState<Style[]>([]);
     const [selectedStores, setSelectedStores] = useState<Store[]>([]);
@@ -226,7 +227,11 @@ const App: React.FC = () => {
                 ? `Crucially, the design must ONLY feature furniture and decor items that are realistically available for purchase from the following specific online stores: ${selectedStores.map(s => s.name).join(', ')}. Do not use items from any other retailers.`
                 : 'The furniture and decor should be from popular, widely available online retailers.';
 
-            const prompt = `Generate a photorealistic rendering of a remodeled ${spaceTypeName}. ${stylePromptPart} The primary color palette is ${colorPalette || 'designer\'s choice'}. The space faces ${roomFacing}, has ${windowCount} windows, and the budget is around $${budget}. The main goal is new furniture and decor. ${storePromptPart} ${floorplanPromptPart}`;
+            const notesPromptPart = designNotes 
+                ? `Additionally, the user has provided these specific instructions which are very important: "${designNotes}". You must adhere to these instructions.` 
+                : '';
+
+            const prompt = `Generate a photorealistic rendering of a remodeled ${spaceTypeName}. ${stylePromptPart} The primary color palette is ${colorPalette || 'designer\'s choice'}. The space faces ${roomFacing}, has ${windowCount} windows, and the budget is around $${budget}. The main goal is new furniture and decor. ${storePromptPart} ${floorplanPromptPart} ${notesPromptPart}`;
             
             const imageForRendering = floorplanImage?.data && floorplanImage.mimeType ? { data: floorplanImage.data, mimeType: floorplanImage.mimeType } : undefined;
 
@@ -245,7 +250,7 @@ const App: React.FC = () => {
         } finally {
             setIsGenerating(false);
         }
-    }, [roomType, commercialType, isCommercial, designStyles, colorPalette, roomFacing, windowCount, budget, floorplanImage, imageInputType, selectedStores, spaceTypeName]);
+    }, [roomType, commercialType, isCommercial, designStyles, colorPalette, roomFacing, windowCount, budget, floorplanImage, imageInputType, selectedStores, spaceTypeName, designNotes]);
 
     const handleStyleSelect = (style: Style) => {
         setDesignStyles(prev => {
@@ -484,6 +489,7 @@ const App: React.FC = () => {
             styleNames: designStyles.map(s => s.name),
             storeNames: selectedStores.map(s => s.name),
             colorPalette: colorPalette,
+            designNotes: designNotes,
         };
         setSavedProjects(prev => [...prev, newProject]);
     };
@@ -821,6 +827,19 @@ const App: React.FC = () => {
                     <input id="budget" type="range" min="500" max="50000" step="500" value={budget} onChange={e => setBudget(parseInt(e.target.value))} className="w-full mt-1 accent-slate-700" />
                 </div>
                 
+                <div>
+                    <label htmlFor="design-notes" className="font-semibold text-slate-700">Additional Notes (Optional)</label>
+                    <p className="text-xs text-slate-500 mb-2">e.g., "Incorporate a reading nook," "Must use a sectional sofa," "Inspired by Frank Lloyd Wright."</p>
+                    <textarea
+                        id="design-notes"
+                        value={designNotes}
+                        onChange={e => setDesignNotes(e.target.value)}
+                        rows={3}
+                        placeholder="Any specific requests for the AI..."
+                        className="w-full p-2 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg focus:ring-1 focus:ring-slate-500 focus:border-slate-500"
+                    />
+                </div>
+
                 <button onClick={handleNextStep} className="w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition">Continue</button>
             </div>
         </div>
@@ -923,7 +942,7 @@ const App: React.FC = () => {
                             </div>
                         ))}
                     </div>
-                    <button onClick={() => { setStep(1); setProjectName(''); setGeneratedImages([]); setSavedItems([]); setUnlockedDesigns(false); setImageInputType(null); setSelectedStores([]); setRoomType(null); setCommercialType(''); }} className="mt-4 w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition">Start a New Project</button>
+                    <button onClick={() => { setStep(1); setProjectName(''); setGeneratedImages([]); setSavedItems([]); setUnlockedDesigns(false); setImageInputType(null); setSelectedStores([]); setRoomType(null); setCommercialType(''); setDesignNotes(''); }} className="mt-4 w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition">Start a New Project</button>
                 </>
             )}
         </div>
@@ -1390,6 +1409,12 @@ const App: React.FC = () => {
                                 />
                             )}
                         </div>
+                        {selectedSavedProject.designNotes && (
+                            <div className="my-4">
+                                <h3 className="font-serif font-bold text-lg text-slate-800 mb-1">Project Notes</h3>
+                                <p className="text-sm text-slate-600 p-3 bg-stone-100 rounded-lg border border-stone-200 whitespace-pre-wrap">{selectedSavedProject.designNotes}</p>
+                            </div>
+                        )}
                         <button 
                             onClick={handleGeneratePdf}
                             disabled={isGeneratingPdf}

@@ -94,4 +94,5 @@ export interface SavedProject {
   furniture?: FurnitureItem[];
   paints?: PaintColor[];
   sources?: any[];
+  designNotes?: string;
 }

@@ -23,7 +23,25 @@ export const generateProjectPdf = async (project: SavedProject) => {
     doc.setFontSize(14);
     doc.setFont("helvetica", "normal");
     doc.text(`${project.roomTypeName} | ${project.styleNames.join(', ')}`, leftMargin, yPos);
-    yPos += 15;
+    yPos += 10;
+
+    // Notes
+    if (project.designNotes) {
+        if (yPos > pageHeight - 30) {
+            doc.addPage();
+            yPos = 20;
+        }
+        doc.setFontSize(12);
+        doc.setFont("helvetica", "bold");
+        doc.text('Project Notes', leftMargin, yPos);
+        yPos += 6;
+
+        doc.setFontSize(10);
+        doc.setFont("helvetica", "normal");
+        const notesLines = doc.splitTextToSize(project.designNotes, contentWidth);
+        doc.text(notesLines, leftMargin, yPos);
+        yPos += (notesLines.length * 5) + 5;
+    }
 
     // Main Image
     const imgData = `data:image/png;base64,${project.image}`;
