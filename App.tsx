@@ -1,12 +1,11 @@
 // Fix: Removed unused GoogleGenAI import.
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { getColorPaletteRecommendation, generateRoomRendering, identifyAndFindFurniture, findSimilarFurniture } from './services/geminiService';
+import { generateProjectPdf } from './services/pdfService';
 import { ROOM_TYPES, DESIGN_STYLES, TIERS, ROOM_DIRECTIONS, STORE_OPTIONS } from './constants';
-import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store, SavedProject } from './types';
+import type { Room, Style, Tier, FloorplanFile, FurnitureItem, Store, SavedProject, PaintColor, SavedPalette } from './types';
 import StepIndicator from './components/StepIndicator';
 import Loader from './components/Loader';
-
-const TOTAL_STEPS = 7;
 
 // Helper to convert a data URL to a File object
 const dataURLtoFile = async (dataUrl: string, filename: string): Promise<File | null> => {
@@ -24,6 +23,7 @@ const App: React.FC = () => {
     const [step, setStep] = useState<number>(1);
     const [projectName, setProjectName] = useState<string>('');
     const [roomType, setRoomType] = useState<Room | null>(null);
+    const [commercialType, setCommercialType] = useState<string>('');
     const [inputMethod, setInputMethod] = useState<'upload' | 'scan' | 'manual' | null>(null);
     const [imageInputType, setImageInputType] = useState<'floorplan' | 'photo' | null>(null);
     const [manualInputMode, setManualInputMode] = useState<'simple' | 'detailed'>('simple');
@@ -47,7 +47,7 @@ const App: React.FC = () => {
     const [isDashboardOpen, setIsDashboardOpen] = useState<boolean>(false);
 
     // State for new Palettes feature
-    const [savedPalettes, setSavedPalettes] = useState<{id: number, colors: string}[]>([]);
+    const [savedPalettes, setSavedPalettes] = useState<SavedPalette[]>([]);
     const [isPalettesViewOpen, setIsPalettesViewOpen] = useState<boolean>(false);
     
     // State for Saved Designs folder
@@ -59,6 +59,8 @@ const App: React.FC = () => {
     const [selectedImageForShopping, setSelectedImageForShopping] = useState<string | null>(null);
     const [isIdentifyingFurniture, setIsIdentifyingFurniture] = useState<boolean>(false);
     const [identifiedFurniture, setIdentifiedFurniture] = useState<FurnitureItem[]>([]);
+    const [identifiedPaints, setIdentifiedPaints] = useState<PaintColor[]>([]);
+    const [shoppingSources, setShoppingSources] = useState<any[]>([]);
     const [savedItems, setSavedItems] = useState<FurnitureItem[]>([]);
     const [cartItems, setCartItems] = useState<FurnitureItem[]>([]);
     const [hoveredItem, setHoveredItem] = useState<FurnitureItem | null>(null);
@@ -66,14 +68,22 @@ const App: React.FC = () => {
     // State for Similar Items
     const [isFindingSimilar, setIsFindingSimilar] = useState<boolean>(false);
     const [similarItems, setSimilarItems] = useState<FurnitureItem[]>([]);
+    const [similarItemsSources, setSimilarItemsSources] = useState<any[]>([]);
     const [selectedItemForSimilar, setSelectedItemForSimilar] = useState<FurnitureItem | null>(null);
 
     // State for AR View
     const [arImageSrc, setArImageSrc] = useState<string | null>(null);
     const [arOpacity, setArOpacity] = useState<number>(0.7);
+    
+    // State for PDF Generation
+    const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
 
 
     const videoRef = useRef<HTMLVideoElement>(null);
+
+    const isCommercial = roomType?.id === 'commercial';
+    const spaceTypeName = isCommercial ? commercialType : roomType?.name;
+    const totalSteps = isCommercial ? 8 : 7;
 
     const handleNextStep = () => setStep(prev => prev + 1);
     const handlePrevStep = () => setStep(prev => prev > 1 ? prev - 1 : 1);
@@ -114,13 +124,14 @@ const App: React.FC = () => {
     };
 
     useEffect(() => {
-        if ((step === 3 && inputMethod === 'scan') || arImageSrc) {
+        const layoutStep = isCommercial ? 4 : 3;
+        if ((step === layoutStep && inputMethod === 'scan') || arImageSrc) {
             startCamera();
         } else {
             stopCamera();
         }
         return () => stopCamera();
-    }, [step, inputMethod, arImageSrc]);
+    }, [step, inputMethod, arImageSrc, isCommercial]);
     
     // Prevent screenshots/content saving
     useEffect(() => {
@@ -167,11 +178,11 @@ const App: React.FC = () => {
     };
     
     const handleRecommendColor = async () => {
-        if (!roomType || designStyles.length === 0) return;
+        if (!spaceTypeName || designStyles.length === 0) return;
         setIsRecommendingColor(true);
         setErrorMessage(null);
         try {
-            const prompt = `Recommend a sophisticated color palette for a ${roomType.name} with a ${designStyles.map(s => s.name).join('/')} style. The room faces ${roomFacing} and has ${windowCount} windows. Provide 3-5 comma-separated color names (e.g., 'Navajo White, Sage Green, Terra Cotta').`;
+            const prompt = `Recommend a sophisticated color palette for a ${spaceTypeName} with a ${designStyles.map(s => s.name).join('/')} style. The space faces ${roomFacing} and has ${windowCount} windows. Provide 3-5 comma-separated values where each value is a color name followed by its HEX code in parentheses. Example: 'Navajo White (#F5DEB3), Sage Green (#8FBC8F), Terra Cotta (#E2725B)'.`;
             const recommendation = await getColorPaletteRecommendation(prompt);
             setColorPalette(recommendation.replace(/['"]+/g, ''));
         } catch (error) {
@@ -182,7 +193,8 @@ const App: React.FC = () => {
     };
     
     const handleGenerate = useCallback(async () => {
-        if (!roomType) return;
+        if (!spaceTypeName) return;
+
         setIsGenerating(true);
         setGeneratedImages([]);
         setErrorMessage(null);
@@ -193,16 +205,16 @@ const App: React.FC = () => {
             if (floorplanImage) {
                 if (floorplanImage.data) {
                     if (imageInputType === 'photo') {
-                        floorplanPromptPart = 'Redesign the room shown in the provided photograph. Keep the same general layout, window and door placement, and perspective. Replace the existing furniture, decor, and wall/floor treatments with new items that match the requested style.';
+                        floorplanPromptPart = 'Redesign the space shown in the provided photograph. Keep the same general layout, window and door placement, and perspective. Replace the existing furniture, decor, and wall/floor treatments with new items that match the requested style.';
                     } else { // 'floorplan' or default
                         floorplanPromptPart = 'Base the room layout on the provided floor plan image.';
                     }
                 } else if (floorplanImage.detailedLayout && floorplanImage.detailedLayout.walls.length > 0) {
                     const { units, walls } = floorplanImage.detailedLayout;
                     const wallDescriptions = walls.map((wall, i) => `Wall ${i+1} is ${wall.length}${units} long, followed by a ${wall.angle}-degree interior corner`).join('; ');
-                    floorplanPromptPart = `The room has a custom shape with ${walls.length} walls. Starting from an arbitrary wall and going clockwise, the wall specifications are: ${wallDescriptions}. The room has ${floorplanImage.doors ?? 1} door(s). Base the room layout on these precise details.`;
+                    floorplanPromptPart = `The space has a custom shape with ${walls.length} walls. Starting from an arbitrary wall and going clockwise, the wall specifications are: ${wallDescriptions}. The space has ${floorplanImage.doors ?? 1} door(s). Base the room layout on these precise details.`;
                 } else if (floorplanImage.dimensions) {
-                    floorplanPromptPart = `The room is a simple rectangle, approximately ${floorplanImage.dimensions.length}${floorplanImage.dimensions.units} by ${floorplanImage.dimensions.width}${floorplanImage.dimensions.units}. It has ${floorplanImage.doors ?? 1} door(s). Base the room layout on these details.`;
+                    floorplanPromptPart = `The space is a simple rectangle, approximately ${floorplanImage.dimensions.length}${floorplanImage.dimensions.units} by ${floorplanImage.dimensions.width}${floorplanImage.dimensions.units}. It has ${floorplanImage.doors ?? 1} door(s). Base the room layout on these details.`;
                 }
             }
             
@@ -214,7 +226,7 @@ const App: React.FC = () => {
                 ? `Crucially, the design must ONLY feature furniture and decor items that are realistically available for purchase from the following specific online stores: ${selectedStores.map(s => s.name).join(', ')}. Do not use items from any other retailers.`
                 : 'The furniture and decor should be from popular, widely available online retailers.';
 
-            const prompt = `Generate a photorealistic rendering of a remodeled ${roomType.name}. ${stylePromptPart} The primary color palette is ${colorPalette || 'designer\'s choice'}. The room faces ${roomFacing}, has ${windowCount} windows, and the budget is around $${budget}. The main goal is new furniture and decor. ${storePromptPart} ${floorplanPromptPart}`;
+            const prompt = `Generate a photorealistic rendering of a remodeled ${spaceTypeName}. ${stylePromptPart} The primary color palette is ${colorPalette || 'designer\'s choice'}. The space faces ${roomFacing}, has ${windowCount} windows, and the budget is around $${budget}. The main goal is new furniture and decor. ${storePromptPart} ${floorplanPromptPart}`;
             
             const imageForRendering = floorplanImage?.data && floorplanImage.mimeType ? { data: floorplanImage.data, mimeType: floorplanImage.mimeType } : undefined;
 
@@ -227,12 +239,13 @@ const App: React.FC = () => {
             setGeneratedImages(results);
 
         } catch (error) {
+            const designDetailsStep = isCommercial ? 5 : 4;
             setErrorMessage("An error occurred while generating images. Please try again.");
-            setStep(5); // Go back to config step
+            setStep(designDetailsStep); // Go back to config step
         } finally {
             setIsGenerating(false);
         }
-    }, [roomType, designStyles, colorPalette, roomFacing, windowCount, budget, floorplanImage, imageInputType, selectedStores]);
+    }, [roomType, commercialType, isCommercial, designStyles, colorPalette, roomFacing, windowCount, budget, floorplanImage, imageInputType, selectedStores, spaceTypeName]);
 
     const handleStyleSelect = (style: Style) => {
         setDesignStyles(prev => {
@@ -247,84 +260,42 @@ const App: React.FC = () => {
         });
     };
     
-    const createThumbnails = useCallback(async (mainImageSrc: string, items: FurnitureItem[]): Promise<FurnitureItem[]> => {
-        return new Promise((resolve) => {
-            const img = new Image();
-            img.src = `data:image/png;base64,${mainImageSrc}`;
-            img.onload = () => {
-                const itemsWithThumbnails = items.map(item => {
-                    if (!item.boundingBox) {
-                        return item;
-                    }
-
-                    const canvas = document.createElement('canvas');
-                    const ctx = canvas.getContext('2d');
-                    if (!ctx) return item;
-
-                    const { x_min, y_min, x_max, y_max } = item.boundingBox;
-                    const naturalWidth = img.naturalWidth;
-                    const naturalHeight = img.naturalHeight;
-
-                    const cropX = x_min * naturalWidth;
-                    const cropY = y_min * naturalHeight;
-                    const cropWidth = (x_max - x_min) * naturalWidth;
-                    const cropHeight = (y_max - y_min) * naturalHeight;
-
-                    canvas.width = cropWidth;
-                    canvas.height = cropHeight;
-
-                    ctx.drawImage(
-                        img,
-                        cropX,
-                        cropY,
-                        cropWidth,
-                        cropHeight,
-                        0,
-                        0,
-                        cropWidth,
-                        cropHeight
-                    );
-
-                    return {
-                        ...item,
-                        thumbnail: canvas.toDataURL('image/png')
-                    };
-                });
-                resolve(itemsWithThumbnails);
-            };
-            img.onerror = () => {
-                resolve(items); // if image fails to load, return original items
-            };
-        });
-    }, []);
-
     const handleShopThisLook = async (imageSrc: string) => {
-        if (!roomType || designStyles.length === 0) return;
+        if (!spaceTypeName || designStyles.length === 0) return;
         
         setSelectedImageForShopping(imageSrc);
         setIsIdentifyingFurniture(true);
-        setIdentifiedFurniture([]); // Clear previous results
+        setIdentifiedFurniture([]);
+        setIdentifiedPaints([]);
+        setShoppingSources([]);
         setErrorMessage(null);
-        setStep(7); // Move to the new step immediately to show a loader there
+        
+        const shopStep = isCommercial ? 8 : 7;
+        setStep(shopStep);
     
         try {
             const styleNames = designStyles.map(s => s.name);
             const storeNames = selectedStores.map(s => s.name);
-            const furniture = await identifyAndFindFurniture(imageSrc, roomType.name, styleNames, storeNames);
-            const furnitureWithThumbnails = await createThumbnails(imageSrc, furniture);
-            setIdentifiedFurniture(furnitureWithThumbnails);
+            const { furniture, paints, sources } = await identifyAndFindFurniture(imageSrc, spaceTypeName, styleNames, storeNames);
+            setIdentifiedFurniture(furniture);
+            setIdentifiedPaints(paints);
+            setShoppingSources(sources);
 
-            // Update saved project if it exists
             const projectIndex = savedProjects.findIndex(p => p.image === imageSrc);
             if (projectIndex !== -1) {
                 const updatedProjects = [...savedProjects];
-                updatedProjects[projectIndex] = { ...updatedProjects[projectIndex], furniture: furnitureWithThumbnails };
+                updatedProjects[projectIndex] = { 
+                    ...updatedProjects[projectIndex], 
+                    furniture: furniture,
+                    paints: paints,
+                    sources: sources,
+                };
                 setSavedProjects(updatedProjects);
             }
-        } catch (error)
- {
+        } catch (error) {
+            const resultsStep = isCommercial ? 7 : 6;
             setErrorMessage("Could not identify furniture in this image. Please try another one.");
-            setStep(6); // Go back to the results
+            setStep(resultsStep);
         } finally {
             setIsIdentifyingFurniture(false);
         }
@@ -350,10 +321,12 @@ const App: React.FC = () => {
         setSelectedItemForSimilar(item);
         setIsFindingSimilar(true);
         setSimilarItems([]);
+        setSimilarItemsSources([]);
         setErrorMessage(null);
         try {
-            const results = await findSimilarFurniture(item);
+            const { similarItems: results, sources } = await findSimilarFurniture(item);
             setSimilarItems(results);
+            setSimilarItemsSources(sources);
         } catch (error) {
             setErrorMessage("Could not find similar items. Please try again.");
         } finally {
@@ -404,7 +377,6 @@ const App: React.FC = () => {
             const watermarkedDataUrl = await addWatermark(base64Image);
             const fileName = `roomgenius-design-${Date.now()}.png`;
 
-            // Use Web Share API if available (modern mobile browsers)
             if (navigator.share) {
                 const file = await dataURLtoFile(watermarkedDataUrl, fileName);
                 if (file) {
@@ -414,9 +386,8 @@ const App: React.FC = () => {
                             title: projectName || 'RoomGenius Design',
                             text: 'Check out this design from RoomGenius AI!',
                         });
-                        return; // Exit if share is successful
+                        return;
                     } catch (error) {
-                        // Catch user cancellation of share sheet, do not show error
                         if ((error as Error).name === 'AbortError') {
                             return;
                         }
@@ -425,7 +396,6 @@ const App: React.FC = () => {
                 }
             }
             
-            // Fallback for desktop and older browsers
             const link = document.createElement('a');
             link.href = watermarkedDataUrl;
             link.download = fileName;
@@ -441,32 +411,79 @@ const App: React.FC = () => {
 
     const handleSavePalette = () => {
         const trimmedPalette = colorPalette.trim();
-        if (trimmedPalette && !savedPalettes.some(p => p.colors.toLowerCase() === trimmedPalette.toLowerCase())) {
-            setSavedPalettes(prev => [...prev, { id: Date.now(), colors: trimmedPalette }]);
+        if (!trimmedPalette) return;
+
+        const paletteName = prompt("Enter a name for this new palette:", `My Custom Palette ${savedPalettes.length + 1}`);
+        if (!paletteName || !paletteName.trim()) return;
+        
+        if (savedPalettes.some(p => p.name.toLowerCase() === paletteName.trim().toLowerCase())) {
+            alert("A palette with this name already exists.");
+            return;
+        }
+
+        const colors = trimmedPalette.split(',').map(colorString => {
+            const hexMatch = colorString.match(/#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})/);
+            const name = colorString.replace(/\(.*\)/, '').trim();
+            return {
+                name: name,
+                hex: hexMatch ? hexMatch[0] : '#ffffff',
+            };
+        });
+
+        const newPalette: SavedPalette = {
+            id: `palette_${Date.now()}`,
+            name: paletteName.trim(),
+            colors: colors,
+        };
+        setSavedPalettes(prev => [...prev, newPalette]);
+    };
+
+    const handleSavePaintPalette = (paints: PaintColor[]) => {
+        if (paints.length === 0) return;
+        const paletteName = prompt("Enter a name for this new palette:", `${projectName} - Wall Colors`);
+        if (paletteName && paletteName.trim()) {
+            const newPalette: SavedPalette = {
+                id: `palette_${Date.now()}`,
+                name: paletteName.trim(),
+                colors: paints.map(p => ({
+                    name: p.name,
+                    hex: p.hex,
+                    brand: p.brand,
+                    brandColorName: p.brandColorName,
+                })),
+            };
+            if (!savedPalettes.some(p => p.name.toLowerCase() === newPalette.name.toLowerCase())) {
+                 setSavedPalettes(prev => [...prev, newPalette]);
+            } else {
+                alert("A palette with this name already exists.");
+            }
         }
     };
 
-    const handleDeletePalette = (id: number) => {
+    const handleDeletePalette = (id: string) => {
         setSavedPalettes(prev => prev.filter(p => p.id !== id));
     };
 
-    const handleUsePalette = (palette: {id: number, colors: string}) => {
-        setColorPalette(palette.colors);
+    const handleUsePalette = (palette: SavedPalette) => {
+        const paletteString = palette.colors.map(c => `${c.name} (${c.hex})`).join(', ');
+        setColorPalette(paletteString);
         setIsPalettesViewOpen(false);
-        setStep(4);
+        const designDetailsStep = isCommercial ? 5 : 4;
+        setStep(designDetailsStep);
     };
     
     const handleSaveToFolder = (imageSrc: string) => {
-        if (!roomType || !projectName) return;
+        if (!spaceTypeName || !projectName) return;
         if (savedProjects.some(p => p.image === imageSrc)) return;
 
         const newProject: SavedProject = {
             id: `proj_${Date.now()}`,
             image: imageSrc,
             projectName: projectName,
-            roomTypeName: roomType.name,
+            roomTypeName: spaceTypeName,
             styleNames: designStyles.map(s => s.name),
             storeNames: selectedStores.map(s => s.name),
+            colorPalette: colorPalette,
         };
         setSavedProjects(prev => [...prev, newProject]);
     };
@@ -474,7 +491,9 @@ const App: React.FC = () => {
     const handleSelectSavedProject = (project: SavedProject) => {
         setSelectedSavedProject(project);
         setIdentifiedFurniture(project.furniture || []);
-        setErrorMessage(null); // Clear previous errors
+        setIdentifiedPaints(project.paints || []);
+        setShoppingSources(project.sources || []);
+        setErrorMessage(null);
     };
     
     const handleShopThisLookForSavedProject = async (project: SavedProject) => {
@@ -482,20 +501,37 @@ const App: React.FC = () => {
         
         setIsIdentifyingFurniture(true);
         setIdentifiedFurniture([]);
+        setIdentifiedPaints([]);
+        setShoppingSources([]);
         setErrorMessage(null);
     
         try {
-            const furniture = await identifyAndFindFurniture(project.image, project.roomTypeName, project.styleNames, project.storeNames);
-            const furnitureWithThumbnails = await createThumbnails(project.image, furniture);
+            const { furniture, paints, sources } = await identifyAndFindFurniture(project.image, project.roomTypeName, project.styleNames, project.storeNames);
             
-            const updatedProject = { ...project, furniture: furnitureWithThumbnails };
+            const updatedProject = { ...project, furniture: furniture, paints: paints, sources: sources };
             setSavedProjects(projects => projects.map(p => p.id === updatedProject.id ? updatedProject : p));
             setSelectedSavedProject(updatedProject);
-            setIdentifiedFurniture(furnitureWithThumbnails);
+            setIdentifiedFurniture(furniture);
+            setIdentifiedPaints(paints);
+            setShoppingSources(sources);
         } catch (error) {
             setErrorMessage("Could not identify furniture for this saved design.");
         } finally {
             setIsIdentifyingFurniture(false);
+        }
+    };
+    
+    const handleGeneratePdf = async () => {
+        if (!selectedSavedProject) return;
+        setIsGeneratingPdf(true);
+        setErrorMessage(null);
+        try {
+            await generateProjectPdf(selectedSavedProject);
+        } catch (error) {
+            console.error("Error generating PDF:", error);
+            setErrorMessage("Could not generate the project PDF. Please try again.");
+        } finally {
+            setIsGeneratingPdf(false);
         }
     };
 
@@ -514,7 +550,7 @@ const App: React.FC = () => {
                     type="text"
                     value={projectName}
                     onChange={e => setProjectName(e.target.value)}
-                    placeholder="e.g., Living Room Makeover"
+                    placeholder="e.g., Downtown Cafe Revamp"
                     className="w-full p-3 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg text-center text-lg focus:ring-2 focus:ring-slate-500 focus:border-slate-500"
                 />
                 <button 
@@ -530,7 +566,7 @@ const App: React.FC = () => {
 
     const renderStep2 = () => (
         <div className="p-4">
-            {renderHeader("Let's Get Started", "How do you want to begin?")}
+            {renderHeader("Let's Get Started", "What are you designing?")}
             <div className="grid grid-cols-2 gap-4 mt-4">
                 {ROOM_TYPES.map((room) => (
                     <button key={room.id} onClick={() => { setRoomType(room); handleNextStep(); }} className="flex flex-col items-center justify-center p-4 bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md hover:border-slate-400 transition-all duration-200 aspect-square">
@@ -538,6 +574,28 @@ const App: React.FC = () => {
                         <span className="mt-2 font-semibold text-slate-800">{room.name}</span>
                     </button>
                 ))}
+            </div>
+        </div>
+    );
+
+    const renderCommercialTypeStep = () => (
+        <div className="p-4 flex flex-col items-center justify-center flex-grow">
+            {renderHeader("What kind of space?", "Describe the type of business for your project.")}
+            <div className="w-full max-w-sm">
+                <input
+                    type="text"
+                    value={commercialType}
+                    onChange={e => setCommercialType(e.target.value)}
+                    placeholder="e.g., Cozy Bookstore, Modern Art Gallery"
+                    className="w-full p-3 bg-slate-800 text-white placeholder-slate-400 border border-slate-600 rounded-lg text-center text-lg focus:ring-2 focus:ring-slate-500 focus:border-slate-500"
+                />
+                <button 
+                    onClick={handleNextStep}
+                    disabled={!commercialType.trim()}
+                    className="mt-6 w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed"
+                >
+                    Continue
+                </button>
             </div>
         </div>
     );
@@ -617,7 +675,7 @@ const App: React.FC = () => {
                         {manualInputMode === 'simple' ? (
                             <div className="w-full space-y-4 text-left">
                                 <div>
-                                    <label className="font-semibold text-slate-700">Room Dimensions</label>
+                                    <label className="font-semibold text-slate-700">Space Dimensions</label>
                                     <div className="flex items-center space-x-2 mt-1">
                                         <input type="number" value={floorplanImage?.dimensions?.length || ''} onChange={e => {
                                             const length = parseInt(e.target.value, 10) || 0;
@@ -694,13 +752,13 @@ const App: React.FC = () => {
                         </label>
                          <label htmlFor="room-photo-upload" onClick={() => setImageInputType('photo')} className="block w-full text-center p-6 bg-white rounded-xl border border-stone-200 shadow-sm cursor-pointer hover:shadow-md hover:border-slate-400 transition">
                              <input id="room-photo-upload" type="file" className="hidden" accept="image/*" onChange={handleFileChange} />
-                             <span className="text-slate-700 font-semibold">Upload Room Photo</span>
+                             <span className="text-slate-700 font-semibold">Upload Photo</span>
                              <p className="text-sm text-slate-500 mt-1">From your camera roll</p>
                         </label>
                         <div className="text-center text-slate-500">or</div>
                         <button onClick={() => setInputMethod('scan')} className="w-full p-6 bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md hover:border-slate-400 transition">
                             <span className="text-slate-700 font-semibold">Scan with Camera (AR)</span>
-                            <p className="text-sm text-slate-500 mt-1">Generate a rendering from your room</p>
+                            <p className="text-sm text-slate-500 mt-1">Generate a rendering from your space</p>
                         </button>
                         <div className="text-center text-slate-500">or</div>
                         <button onClick={() => {
@@ -739,13 +797,10 @@ const App: React.FC = () => {
                              <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v12l-5-3.09L5 16V4z" />
                            </svg>
                         </button>
-                        <button onClick={handleRecommendColor} disabled={designStyles.length === 0 || isRecommendingColor} className="p-2 bg-stone-100 text-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed border border-stone-200">
-                            {isRecommendingColor ? <div className="w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full animate-spin"></div> : 'AI ✨'}
+                        <button onClick={handleRecommendColor} disabled={designStyles.length === 0 || isRecommendingColor} className="px-3 py-2 text-sm whitespace-nowrap bg-stone-100 text-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed border border-stone-200">
+                            {isRecommendingColor ? <div className="w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full animate-spin"></div> : 'Surprise Me!'}
                         </button>
                     </div>
-                     <button onClick={() => setColorPalette('')} className="mt-2 text-sm text-slate-500 hover:text-slate-800 transition">
-                        ...or surprise me!
-                    </button>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -827,7 +882,7 @@ const App: React.FC = () => {
                 <Loader />
             ) : (
                 <>
-                    {renderHeader("Your New Room!", "Here are your AI-generated designs.")}
+                    {renderHeader("Your New Space!", "Here are your AI-generated designs.")}
                     {errorMessage && <p className="text-red-500 mb-4 text-center">{errorMessage}</p>}
                     <div className="flex-grow overflow-y-auto space-y-6">
                         {generatedImages.map((imgSrc, index) => (
@@ -835,7 +890,7 @@ const App: React.FC = () => {
                                 <div className="relative">
                                     <img 
                                         src={`data:image/png;base64,${imgSrc}`} 
-                                        alt={`Generated room design ${index + 1}`} 
+                                        alt={`Generated design ${index + 1}`} 
                                         className={`w-full h-auto transition-all duration-300 ${index > 0 && !unlockedDesigns ? 'blur-lg' : 'blur-none'}`} 
                                     />
                                     {index > 0 && !unlockedDesigns && (
@@ -868,7 +923,7 @@ const App: React.FC = () => {
                             </div>
                         ))}
                     </div>
-                    <button onClick={() => { setStep(1); setProjectName(''); setGeneratedImages([]); setSavedItems([]); setUnlockedDesigns(false); setImageInputType(null); setSelectedStores([]); }} className="mt-4 w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition">Start a New Project</button>
+                    <button onClick={() => { setStep(1); setProjectName(''); setGeneratedImages([]); setSavedItems([]); setUnlockedDesigns(false); setImageInputType(null); setSelectedStores([]); setRoomType(null); setCommercialType(''); }} className="mt-4 w-full bg-slate-800 text-white py-3 rounded-lg font-semibold hover:bg-slate-700 transition">Start a New Project</button>
                 </>
             )}
         </div>
@@ -899,12 +954,42 @@ const App: React.FC = () => {
                     </div>
                     
                     <div className="space-y-4">
+                        <div>
+                            <div className="flex justify-between items-center mb-2">
+                                <h3 className="font-serif font-bold text-xl text-slate-800">Wall Colors</h3>
+                                {identifiedPaints.length > 0 && (
+                                    <button 
+                                        onClick={() => handleSavePaintPalette(identifiedPaints)}
+                                        className="py-1 px-3 text-sm font-semibold bg-stone-100 text-slate-700 rounded-md hover:bg-stone-200 transition border border-stone-200"
+                                    >
+                                        Save Palette
+                                    </button>
+                                )}
+                            </div>
+                            {identifiedPaints.length > 0 ? (
+                                <div className="space-y-3">
+                                    {identifiedPaints.map((paint, index) => (
+                                        <div key={index} className="bg-white p-3 rounded-lg border border-stone-200 flex items-center space-x-4">
+                                            <div className="w-12 h-12 rounded-md border border-stone-300 flex-shrink-0" style={{ backgroundColor: paint.hex }}></div>
+                                            <div className="flex-grow">
+                                                <h4 className="font-bold text-slate-900">{paint.brandColorName}</h4>
+                                                <p className="text-sm text-slate-500">{paint.brand}</p>
+                                                <p className="text-sm text-slate-600 mt-1">{paint.name} ({paint.hex})</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <p className="text-slate-600 text-center p-4 bg-stone-100 rounded-lg">No specific paint colors identified yet.</p>
+                            )}
+                        </div>
+
                          <div>
                             <h3 className="font-serif font-bold text-xl text-slate-800 mb-2">Recommended Items</h3>
                             {identifiedFurniture.length > 0 ? (
                                 <div className="space-y-3">
                                 {identifiedFurniture.map((item, index) => {
-                                    const itemThumbnail = item.thumbnail || item.thumbnailUrl;
+                                    const itemThumbnailUrl = item.thumbnailUrl;
                                     return (
                                         <div 
                                             key={index}
@@ -913,8 +998,8 @@ const App: React.FC = () => {
                                             onMouseLeave={() => setHoveredItem(null)}
                                         >
                                             <div className="flex items-start space-x-4">
-                                                {itemThumbnail ? (
-                                                    <img src={itemThumbnail} alt={item.name} className="w-20 h-20 object-cover rounded-md border flex-shrink-0 bg-stone-100" />
+                                                {itemThumbnailUrl ? (
+                                                    <img src={itemThumbnailUrl} alt={item.name} className="w-20 h-20 object-cover rounded-md border flex-shrink-0 bg-stone-100" />
                                                 ) : (
                                                     <div className="w-20 h-20 bg-stone-100 rounded-md border flex-shrink-0 flex items-center justify-center">
                                                         <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -951,12 +1036,29 @@ const App: React.FC = () => {
                             ) : <p className="text-slate-600 text-center p-4 bg-stone-100 rounded-lg">No individual items could be identified in this image.</p>}
                         </div>
 
+                        {shoppingSources.length > 0 && (
+                            <div>
+                                <h3 className="font-serif font-bold text-xl text-slate-800 mt-6 mb-2">Sources</h3>
+                                <div className="p-3 bg-stone-100 rounded-lg border border-stone-200">
+                                    <ul className="list-disc list-inside space-y-1 text-sm text-slate-600">
+                                        {shoppingSources.map((source, index) => source.web && (
+                                            <li key={index}>
+                                                <a href={source.web.uri} target="_blank" rel="noopener noreferrer" className="text-slate-700 hover:underline break-all">
+                                                    {source.web.title || source.web.uri}
+                                                </a>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            </div>
+                        )}
+
                         <div>
                             <h3 className="font-serif font-bold text-xl text-slate-800 mt-6 mb-2">My Library {savedItems.length > 0 && `(${savedItems.length})`}</h3>
                             {savedItems.length > 0 ? (
                                 <div className="space-y-3">
                                     {savedItems.map((item, index) => {
-                                        const itemThumbnailUrl = item.thumbnail || item.thumbnailUrl;
+                                        const itemThumbnailUrl = item.thumbnailUrl;
                                         return (
                                             <div key={index} className="bg-white p-3 rounded-lg border border-stone-200 flex items-center space-x-3">
                                                 {itemThumbnailUrl ? (
@@ -1068,6 +1170,22 @@ const App: React.FC = () => {
                                     </div>
                                 </div>
                             ))}
+                            {similarItemsSources.length > 0 && (
+                                <div className="mt-4">
+                                    <h3 className="font-serif font-bold text-md text-slate-800 mb-2">Sources</h3>
+                                     <div className="p-3 bg-stone-100 rounded-lg border border-stone-200">
+                                        <ul className="list-disc list-inside space-y-1 text-xs text-slate-600">
+                                            {similarItemsSources.map((source, index) => source.web && (
+                                                <li key={index}>
+                                                    <a href={source.web.uri} target="_blank" rel="noopener noreferrer" className="text-slate-700 hover:underline break-all">
+                                                        {source.web.title || source.web.uri}
+                                                    </a>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     ) : (
                         <p className="text-slate-600 text-center">No similar items were found.</p>
@@ -1182,12 +1300,18 @@ const App: React.FC = () => {
                         <div className="space-y-3">
                             {savedPalettes.map(palette => (
                                 <div key={palette.id} className="bg-stone-50 p-3 rounded-lg border border-stone-200">
-                                    <div className="flex items-center space-x-2 mb-2">
-                                        {palette.colors.split(',').map(color => color.trim()).map((color, index) => (
-                                            <div key={index} className="h-6 w-6 rounded-full border border-stone-300" style={{ backgroundColor: color }} title={color}></div>
+                                    <p className="text-sm text-slate-800 font-bold mb-2">{palette.name}</p>
+                                    <div className="space-y-2 mb-3">
+                                        {palette.colors.map((color, index) => (
+                                            <div key={index} className="flex items-center space-x-3">
+                                                <div className="w-6 h-6 rounded-full border border-stone-300 flex-shrink-0" style={{ backgroundColor: color.hex }}></div>
+                                                <div className="flex-grow">
+                                                    <p className="text-sm font-medium text-slate-800 leading-tight">{color.brandColorName || color.name}</p>
+                                                    {(color.brand || color.hex) && <p className="text-xs text-slate-500 leading-tight">{color.brand ? `${color.brand} - ${color.hex}` : color.hex}</p>}
+                                                </div>
+                                            </div>
                                         ))}
                                     </div>
-                                    <p className="text-sm text-slate-700 font-medium mb-3">{palette.colors}</p>
                                     <div className="flex items-center justify-between">
                                         <button onClick={() => handleUsePalette(palette)} className="py-1 px-3 text-sm font-semibold bg-slate-800 text-white rounded-md hover:bg-slate-700 transition">
                                             Use This Palette
@@ -1237,6 +1361,7 @@ const App: React.FC = () => {
 
     const renderSavedProjectDetailView = () => {
         if (!selectedSavedProject) return null;
+        const sources = selectedSavedProject.sources || [];
 
         return (
             <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
@@ -1265,47 +1390,109 @@ const App: React.FC = () => {
                                 />
                             )}
                         </div>
+                        <button 
+                            onClick={handleGeneratePdf}
+                            disabled={isGeneratingPdf}
+                            className="w-full text-center py-2 px-3 text-sm font-semibold rounded-md bg-stone-100 text-slate-700 hover:bg-stone-200 transition border border-stone-200 disabled:bg-stone-200 disabled:text-stone-500 disabled:cursor-not-allowed flex items-center justify-center"
+                        >
+                            {isGeneratingPdf ? (
+                                <>
+                                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-slate-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Generating PDF...
+                                </>
+                            ) : (
+                                'Download Project PDF'
+                            )}
+                        </button>
+                        {errorMessage && <p className="text-red-500 text-center">{errorMessage}</p>}
                          <div>
                             <h3 className="font-serif font-bold text-xl text-slate-800 mb-2">Shop The Look</h3>
                             {isIdentifyingFurniture ? (
                                 <Loader />
-                            ) : identifiedFurniture.length > 0 ? (
-                                <div className="space-y-3">
-                                    {identifiedFurniture.map((item, index) => {
-                                        const itemThumbnail = item.thumbnail || item.thumbnailUrl;
-                                        return (
-                                            <div 
-                                                key={index}
-                                                className="bg-stone-50 p-3 rounded-xl border border-stone-200"
-                                                onMouseEnter={() => setHoveredItem(item)}
-                                                onMouseLeave={() => setHoveredItem(null)}
-                                            >
-                                                <div className="flex items-start space-x-4">
-                                                     {itemThumbnail ? (
-                                                        <img src={itemThumbnail} alt={item.name} className="w-20 h-20 object-cover rounded-md border flex-shrink-0 bg-stone-100" />
-                                                    ) : (
-                                                        <div className="w-20 h-20 bg-stone-100 rounded-md border flex-shrink-0 flex items-center justify-center">
-                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                                                        </div>
-                                                    )}
-                                                    <div className="flex-grow">
-                                                        <h4 className="font-bold text-slate-900 text-sm">{item.name}</h4>
-                                                        <p className="text-xs text-slate-500">{item.store} - <span className="font-medium">{item.price}</span></p>
-                                                        <p className="text-xs text-slate-600 mt-1">{item.description}</p>
-                                                        <a href={item.purchaseUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-slate-600 hover:underline mt-2 inline-block">View Product &rarr;</a>
-                                                    </div>
-                                                </div>
+                            ) : (identifiedFurniture.length > 0 || identifiedPaints.length > 0) ? (
+                                <div className="space-y-4">
+                                    {identifiedPaints.length > 0 && (
+                                        <div>
+                                            <div className="flex justify-between items-center mb-2">
+                                                <h4 className="font-serif font-bold text-lg text-slate-800">Wall Colors</h4>
+                                                <button 
+                                                    onClick={() => handleSavePaintPalette(identifiedPaints)}
+                                                    className="py-1 px-2 text-xs font-semibold bg-stone-100 text-slate-700 rounded-md hover:bg-stone-200 transition border border-stone-200"
+                                                >
+                                                    Save Palette
+                                                </button>
                                             </div>
-                                        );
-                                    })}
+                                            <div className="space-y-3">
+                                                {identifiedPaints.map((paint, index) => (
+                                                    <div key={index} className="bg-stone-50 p-3 rounded-lg border border-stone-200 flex items-center space-x-4">
+                                                        <div className="w-10 h-10 rounded-md border border-stone-300 flex-shrink-0" style={{ backgroundColor: paint.hex }}></div>
+                                                        <div className="flex-grow">
+                                                            <h5 className="font-bold text-slate-900 text-sm">{paint.brandColorName}</h5>
+                                                            <p className="text-xs text-slate-500">{paint.brand}</p>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                    {identifiedFurniture.length > 0 && (
+                                        <div>
+                                            <h4 className="font-serif font-bold text-lg text-slate-800 mt-4 mb-2">Furniture & Decor</h4>
+                                            <div className="space-y-3">
+                                                {identifiedFurniture.map((item, index) => {
+                                                    const itemThumbnailUrl = item.thumbnailUrl;
+                                                    return (
+                                                        <div 
+                                                            key={index}
+                                                            className="bg-stone-50 p-3 rounded-xl border border-stone-200"
+                                                            onMouseEnter={() => setHoveredItem(item)}
+                                                            onMouseLeave={() => setHoveredItem(null)}
+                                                        >
+                                                            <div className="flex items-start space-x-4">
+                                                                {itemThumbnailUrl ? (
+                                                                    <img src={itemThumbnailUrl} alt={item.name} className="w-20 h-20 object-cover rounded-md border flex-shrink-0 bg-stone-100" />
+                                                                ) : (
+                                                                    <div className="w-20 h-20 bg-stone-100 rounded-md border flex-shrink-0 flex items-center justify-center">
+                                                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                                                    </div>
+                                                                )}
+                                                                <div className="flex-grow">
+                                                                    <h5 className="font-bold text-slate-900 text-sm">{item.name}</h5>
+                                                                    <p className="text-xs text-slate-500">{item.store} - <span className="font-medium">{item.price}</span></p>
+                                                                    <p className="text-xs text-slate-600 mt-1">{item.description}</p>
+                                                                    <a href={item.purchaseUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-slate-600 hover:underline mt-2 inline-block">View Product &rarr;</a>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+                                    {sources.length > 0 && (
+                                        <div>
+                                            <h3 className="font-serif font-bold text-lg text-slate-800 mt-6 mb-2">Sources</h3>
+                                            <div className="p-3 bg-stone-100 rounded-lg border border-stone-200">
+                                                <ul className="list-disc list-inside space-y-1 text-sm text-slate-600">
+                                                    {sources.map((source, index) => source.web && (
+                                                        <li key={index}>
+                                                            <a href={source.web.uri} target="_blank" rel="noopener noreferrer" className="text-slate-700 hover:underline break-all">
+                                                                {source.web.title || source.web.uri}
+                                                            </a>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
-                                <>
-                                    <button onClick={() => handleShopThisLookForSavedProject(selectedSavedProject)} className="w-full bg-slate-800 text-white py-2 rounded-lg font-semibold hover:bg-slate-700 transition">
-                                        Find Furniture Items
-                                    </button>
-                                    {errorMessage && <p className="text-red-500 mt-2 text-center">{errorMessage}</p>}
-                                </>
+                                <button onClick={() => handleShopThisLookForSavedProject(selectedSavedProject)} className="w-full bg-slate-800 text-white py-2 rounded-lg font-semibold hover:bg-slate-700 transition">
+                                    Find Furniture & Paints
+                                </button>
                             )}
                         </div>
                     </div>
@@ -1315,15 +1502,29 @@ const App: React.FC = () => {
     };
 
     const renderCurrentStep = () => {
-        switch (step) {
-            case 1: return renderStep1();
-            case 2: return renderStep2();
-            case 3: return renderStep3();
-            case 4: return renderStep4();
-            case 5: return renderStoreSelectionStep();
-            case 6: return renderResultsStep();
-            case 7: return renderShopStep();
-            default: return renderStep1();
+        if (isCommercial) {
+            switch (step) {
+                case 1: return renderStep1();
+                case 2: return renderStep2();
+                case 3: return renderCommercialTypeStep();
+                case 4: return renderStep3();
+                case 5: return renderStep4();
+                case 6: return renderStoreSelectionStep();
+                case 7: return renderResultsStep();
+                case 8: return renderShopStep();
+                default: return renderStep1();
+            }
+        } else {
+            switch (step) {
+                case 1: return renderStep1();
+                case 2: return renderStep2();
+                case 3: return renderStep3();
+                case 4: return renderStep4();
+                case 5: return renderStoreSelectionStep();
+                case 6: return renderResultsStep();
+                case 7: return renderShopStep();
+                default: return renderStep1();
+            }
         }
     };
     
@@ -1354,7 +1555,7 @@ const App: React.FC = () => {
                                 </button>
                             </div>
                         ) : (
-                            <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
+                            <StepIndicator currentStep={step} totalSteps={totalSteps} />
                         )}
                     </div>
                     <div className="w-10 flex-shrink-0 flex items-center justify-center">
@@ -1372,7 +1573,7 @@ const App: React.FC = () => {
                     <div className="flex-grow flex flex-col">
                         {step > 1 && (
                             <div className="flex-shrink-0">
-                                <StepIndicator currentStep={step} totalSteps={TOTAL_STEPS} />
+                                <StepIndicator currentStep={step} totalSteps={totalSteps} />
                             </div>
                         )}
                         {/* FIX: Replaced malformed text with a call to render the current step's content. */}

@@ -1,9 +1,5 @@
-
-
-
-
 import { GoogleGenAI, Modality, Type } from "@google/genai";
-import type { FloorplanFile, FurnitureItem } from '../types';
+import type { FloorplanFile, FurnitureItem, PaintColor } from '../types';
 
 if (!process.env.API_KEY) {
   throw new Error("API_KEY environment variable is not set");
@@ -56,30 +52,21 @@ export const generateRoomRendering = async (prompt: string, floorplan?: Floorpla
       }
 };
 
-export const identifyAndFindFurniture = async (rendering: string, roomType: string, styles: string[], stores: string[]): Promise<FurnitureItem[]> => {
+export const identifyAndFindFurniture = async (rendering: string, roomType: string, styles: string[], stores: string[]): Promise<{ furniture: FurnitureItem[], paints: PaintColor[], sources: any[] }> => {
     try {
         const storeList = stores.length > 0 ? stores.join(', ') : 'popular online stores (e.g., Wayfair, IKEA, West Elm, Amazon)';
-        const prompt = `Your primary task is to find direct product links for furniture and decor in this image of a ${roomType} with a ${styles.join(', ')} design style. Identify up to 8 distinct items and find real, purchasable versions from these specific stores: ${storeList}.
+        const prompt = `You are a virtual interior designer with access to Google Search. Your primary goal is accuracy and providing valid, real-world product information. Analyze this image of a ${roomType} with a ${styles.join(', ')} design style. Your task is to identify furniture/decor and wall paint colors, finding real, currently purchasable products.
 
-**CRITICAL INSTRUCTION: URL ACCURACY IS THE TOP PRIORITY.**
-For each item, you MUST provide a direct, specific, and valid HTTPS link to the product's detail page.
-- **ABSOLUTELY NO** homepages (e.g., 'https://www.ikea.com').
-- **ABSOLUTELY NO** category pages (e.g., 'https://www.wayfair.com/furniture/cat/sofas-c123.html').
-- **ABSOLUTELY NO** search results (e.g., 'https://www.amazon.com/s?k=blue+chair').
+Return ONLY a single, valid JSON object with two keys: "furniture" and "paints". Do not include any other text or markdown formatting.
 
-A good URL looks like: 'https://www.ikea.com/us/en/p/product-name-12345/'.
-A bad URL looks like: 'https://www.ikea.com/'.
+1.  **furniture**: An array of up to 8 distinct items. For each item:
+    *   Use your search tool to find a real, in-stock, purchasable version from these specific stores: ${storeList}.
+    *   **CRITICAL: The 'purchaseUrl' must be a direct, valid, and active HTTPS link to the specific product's detail page. Before including a URL, you MUST verify that it leads to a 200 OK status page for a single product. Do not provide links to homepages, category pages, search results, or out-of-stock items.**
+    *   Provide: 'name', 'description', 'store', 'price', 'purchaseUrl', 'thumbnailUrl', and 'boundingBox' (normalized coordinates).
 
-If you cannot find a direct product page URL for an item, **DO NOT INCLUDE THAT ITEM** in your response. It is better to return fewer items with correct URLs than more items with incorrect ones.
-
-For each item you successfully find a valid link for, provide:
-1.  **Product Name:** The exact name of the product.
-2.  **Description:** A brief, one-sentence description.
-3.  **Store:** The name of the online store.
-4.  **Price:** The approximate price as a string (e.g., "$499.99").
-5.  **Purchase URL:** The direct product page URL as described above.
-6.  **Bounding Box:** The item's location in the image, using normalized coordinates (0.0 to 1.0) for x_min, y_min, x_max, and y_max.
-7.  **Thumbnail URL:** A direct, public HTTPS URL to a product image file (e.g., ending in .jpg, .png, .webp). This must be a URL to the image asset itself, not the HTML product page.`;
+2.  **paints**: An array of up to 3 dominant wall colors. For each color:
+    *   Use your search tool to find a matching real-world paint from a major brand (e.g., Sherwin-Williams, Benjamin Moore, Farrow & Ball).
+    *   Provide: 'name' (e.g., "Sage Green"), 'hex' (e.g., "#8FBC8F"), 'brand' (e.g., "Sherwin-Williams"), and 'brandColorName' (e.g., "Clary Sage SW 6178").`;
 
         const imagePart = {
             inlineData: {
@@ -92,46 +79,15 @@ For each item you successfully find a valid link for, provide:
             model: 'gemini-2.5-pro',
             contents: { parts: [imagePart, { text: prompt }] },
             config: {
-                responseMimeType: 'application/json',
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            name: { type: Type.STRING, description: "Product name" },
-                            description: { type: Type.STRING, description: "A brief one-sentence description of the product." },
-                            store: { type: Type.STRING, description: "Online store name (e.g., Wayfair, IKEA)." },
-                            price: { type: Type.STRING, description: "Approximate price of the item as a string, including currency." },
-                            purchaseUrl: { 
-                                type: Type.STRING, 
-                                description: "A valid, direct HTTPS URL to the product's specific detail page. MUST NOT be a homepage, category page, or search results page. It must link directly to a single product." 
-                            },
-                            thumbnailUrl: {
-                                type: Type.STRING,
-                                description: "A direct, public HTTPS URL to a product image file (e.g., ending in .jpg, .png, .webp). This must be a URL to the image asset itself, not the HTML product page."
-                            },
-                            boundingBox: {
-                                type: Type.OBJECT,
-                                description: "Normalized coordinates for the item's location.",
-                                properties: {
-                                    x_min: { type: Type.NUMBER },
-                                    y_min: { type: Type.NUMBER },
-                                    x_max: { type: Type.NUMBER },
-                                    y_max: { type: Type.NUMBER },
-                                },
-                                required: ['x_min', 'y_min', 'x_max', 'y_max']
-                            },
-                        },
-                        required: ['name', 'description', 'store', 'price', 'purchaseUrl', 'boundingBox', 'thumbnailUrl'],
-                    },
-                },
+                tools: [{googleSearch: {}}],
             },
         });
         
+        const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
         const jsonString = response.text.trim();
         const cleanedJsonString = jsonString.replace(/^```json\n/, '').replace(/\n```$/, '');
-        const furnitureItems: FurnitureItem[] = JSON.parse(cleanedJsonString);
-        return furnitureItems;
+        const result: { furniture: FurnitureItem[], paints: PaintColor[] } = JSON.parse(cleanedJsonString);
+        return { ...result, sources };
 
     } catch (error) {
         console.error("Error identifying furniture:", error);
@@ -139,9 +95,9 @@ For each item you successfully find a valid link for, provide:
     }
 };
 
-export const findSimilarFurniture = async (item: FurnitureItem): Promise<FurnitureItem[]> => {
+export const findSimilarFurniture = async (item: FurnitureItem): Promise<{ similarItems: FurnitureItem[], sources: any[] }> => {
     try {
-        const prompt = `Based on the following furniture item, find 3 to 5 similar, alternative products that are currently available for purchase from popular online stores (like Wayfair, West Elm, Article, IKEA, Amazon, etc.).
+        const prompt = `You are an expert product sourcer with access to Google Search. Based on the following furniture item, find 3 to 5 similar, alternative products that are currently available for purchase online.
 
 Original Item:
 - Name: ${item.name}
@@ -149,50 +105,33 @@ Original Item:
 - Store: ${item.store}
 - Price: ${item.price}
 
-For each alternative, you MUST provide:
-1.  **Product Name:** The exact name of the product.
-2.  **Description:** A brief, one-sentence description highlighting what makes it similar or different.
-3.  **Store:** The name of the online store.
-4.  **Price:** The approximate price as a string (e.g., "$499.99").
-5.  **Purchase URL:** A direct, specific, and valid HTTPS link to the product's own detail page. **This URL must lead directly to the product, NOT to a homepage or category page.**
-6.  **Thumbnail URL:** A direct, public HTTPS URL to a product image file (ending in .jpg, .png, or .webp). This must be a URL to the image itself, not a product page.
+Return ONLY a single, valid JSON array of objects. Do not include any other text or markdown formatting.
 
-The alternatives should be similar in style (e.g., Mid-Century Modern, Farmhouse) and function, but can vary in price or material. Do not suggest the exact same product from a different store.`;
+For each alternative, use your search tool to find and provide:
+1. 'name': The exact product name.
+2. 'description': A brief, one-sentence description.
+3. 'store': The online store name.
+4. 'price': The current price as a string (e.g., "$499.99").
+5. 'purchaseUrl': **CRITICAL: This must be a verified, direct, and active HTTPS link to the specific product's detail page. You MUST verify the URL is live and points to a single product page, not a list or search result. Do NOT provide links to homepages, category pages, or out-of-stock items.**
+6. 'thumbnailUrl': A direct HTTPS link to a product image file (e.g., .jpg, .png, .webp).
+
+The alternatives should be similar in style and function but can vary in price or material.`;
 
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-pro',
             contents: { parts: [{ text: prompt }] },
             config: {
-                responseMimeType: 'application/json',
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            name: { type: Type.STRING, description: "Product name" },
-                            description: { type: Type.STRING, description: "A brief one-sentence description of the product." },
-                            store: { type: Type.STRING, description: "Online store name." },
-                            price: { type: Type.STRING, description: "Approximate price as a string." },
-                            purchaseUrl: { 
-                                type: Type.STRING, 
-                                description: "A valid, direct HTTPS URL to the product's specific detail page." 
-                            },
-                            thumbnailUrl: { 
-                                type: Type.STRING, 
-                                description: "A direct, public HTTPS URL to a product image file (ending in .jpg, .png, or .webp). This must be a URL to the image itself, not a product page." 
-                            },
-                        },
-                        required: ['name', 'description', 'store', 'price', 'purchaseUrl', 'thumbnailUrl'],
-                    },
-                },
+                tools: [{googleSearch: {}}],
             },
         });
         
+        const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
         const jsonString = response.text.trim();
         const cleanedJsonString = jsonString.replace(/^```json\n/, '').replace(/\n```$/, '');
         const similarItems: FurnitureItem[] = JSON.parse(cleanedJsonString);
-        return similarItems;
+        return { similarItems, sources };
 
+// FIX: Added curly braces to the catch block to fix syntax error.
     } catch (error) {
         console.error("Error finding similar furniture:", error);
         throw new Error("Failed to find similar furniture.");

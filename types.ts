@@ -60,8 +60,27 @@ export interface FurnitureItem {
     price: string;
     purchaseUrl:string;
     boundingBox?: BoundingBox;
-    thumbnail?: string;
     thumbnailUrl?: string;
+}
+
+export interface PaintColor {
+    name: string;
+    hex: string;
+    brand: string;
+    brandColorName: string;
+}
+
+export interface PaletteColor {
+    name: string;
+    hex: string;
+    brand?: string;
+    brandColorName?: string;
+}
+
+export interface SavedPalette {
+    id: string;
+    name: string;
+    colors: PaletteColor[];
 }
 
 export interface SavedProject {
@@ -71,5 +90,8 @@ export interface SavedProject {
   roomTypeName: string;
   styleNames: string[];
   storeNames: string[];
+  colorPalette?: string;
   furniture?: FurnitureItem[];
+  paints?: PaintColor[];
+  sources?: any[];
 }

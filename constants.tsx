@@ -10,6 +10,7 @@ export const ROOM_TYPES: Room[] = [
   { id: 'kitchen', name: 'Kitchen', icon: <KitchenIcon /> },
   { id: 'dining-room', name: 'Dining Room', icon: <DiningRoomIcon /> },
   { id: 'home-office', name: 'Home Office', icon: <OfficeIcon /> },
+  { id: 'commercial', name: 'Commercial', icon: <CommercialIcon /> },
 ];
 
 export const DESIGN_STYLES: Style[] = [
@@ -32,6 +33,10 @@ export const DESIGN_STYLES: Style[] = [
   { id: 'scandinavian', name: 'Scandinavian' },
   { id: 'dark-academia', name: 'Dark Academia' },
   { id: 'industrial', name: 'Industrial' },
+  { id: 'urban', name: 'Urban' },
+  { id: 'vintage', name: 'Vintage' },
+  { id: 'ethnic', name: 'Ethnic' },
+  { id: 'mediterranean', name: 'Mediterranean' },
 ];
 
 export const TIERS: Tier[] = [
@@ -62,6 +67,14 @@ export const STORE_OPTIONS: Store[] = [
   ];
 
 // Icon Components
+function CommercialIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M8.25 21V3m8.25 18V3M3.75 6h16.5M3.75 9h16.5m-16.5 3h16.5m-16.5 3h16.5" />
+    </svg>
+  );
+}
+
 function SofaIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
